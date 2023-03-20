@@ -2,6 +2,6 @@
 Perl script to send commands to a Mikrotik list via SSH
 
 ## 🚀 Usage
-- Download mkmassupdate.pl and edit USERNAME, PASSWORD and DIR
+- Download mkmassupdate.pl and edit USERNAME and PASSWORD
 - Edit or create list.txt
 - ```perl mkmassupdate.pl```
