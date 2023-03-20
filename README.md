@@ -7,7 +7,7 @@ Via $ssh->system you can pass any other command
 ## Note
 - Access via ssh must be enabled on Mikrotik
 
-## 🚀 Usage
+## Usage
 * Download mkmassupdate.pl and edit USERNAME and PASSWORD
 * Edit or create list.txt
 * ```perl mkmassupdate.pl```
