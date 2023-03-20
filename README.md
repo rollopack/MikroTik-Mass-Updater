@@ -8,6 +8,6 @@ Via $ssh->system you can pass any other command
 - Access via ssh must be enabled
 
 ## 🚀 Usage
-- Download mkmassupdate.pl and edit USERNAME and PASSWORD
-- Edit or create list.txt
-- ```perl mkmassupdate.pl```
+* Download mkmassupdate.pl and edit USERNAME and PASSWORD
+* Edit or create list.txt
+* ```perl mkmassupdate.pl```
