@@ -5,7 +5,7 @@ By default the script looks for any updates and installs them.
 Via $ssh->system you can pass any other command
 
 ## Note
-- Access via ssh must be enabled
+- Access via ssh must be enabled on Mikrotik
 
 ## 🚀 Usage
 * Download mkmassupdate.pl and edit USERNAME and PASSWORD
