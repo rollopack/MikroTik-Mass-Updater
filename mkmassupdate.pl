@@ -17,7 +17,7 @@ use constant PASSWORD => 'password';
 # List file format is xxx.xxx.xxx.xxx 
 use constant IP_LIST_FILE => 'list.txt';
 
-# Directory where the Backup files will be stored, this is for windows, for linux use default path system eg: /home/kevin or ./Dropbox for dropbox
+# Directory where the log will be stored: /home/kevin or ./Dropbox for dropbox
 use constant DIR => '/mnt/dropbox/Documenti/Mikrotik/Mikrotik massupdater/';
 
 # Log filename
