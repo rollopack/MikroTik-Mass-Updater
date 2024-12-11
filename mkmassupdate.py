@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v3.0.7
+#  MikroTik Mass Updater v3.0.8
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and paramiko by: Gabriel Rolland
@@ -73,6 +73,7 @@ def worker(q, log, username, password):
 
                 # Scrivi nel log in tempo reale e forza lo svuotamento del buffer
                 with log_lock:
+                    log.write(f"Host: {IP}\n")
                     log.write(f"  Command: {command}\n")
                     if stdout_str:
                         log.write(f"    Output:\n{stdout_str}\n")
