@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v3.0.8
+#  MikroTik Mass Updater v3.0.10
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and paramiko by: Gabriel Rolland
@@ -67,14 +67,90 @@ def worker(q, log, username, password):
             ]
 
             for command in commands:
+                # Sincronizza l'accesso al file di log con log_lock
+                with log_lock:
+                    log.write(f"Host: {IP}\n")  # Spostata qui
+                    log.write(f"  Command: {command}\n")
+                    log.flush()
+
                 stdin, stdout, stderr = client.exec_command(command)
                 stdout_str = stdout.read().decode()
                 stderr_str = stderr.read().decode()
 
                 # Scrivi nel log in tempo reale e forza lo svuotamento del buffer
                 with log_lock:
-                    log.write(f"Host: {IP}\n")
+                    if stdout_str:
+                        log.write(f"    Output:\n{stdout_str}\n")
+                    if stderr_str:
+                        log.write(f"    Error:\n{stderr_str}\n")
+                    log.flush()  # Forza la scrittura immediata
+
+                host_log += f"  Command: {command}\n"
+                if stdout_str:
+                    host_log += f"    Output:\n{stdout_str}\n"
+                if stderr_str:
+                    host_log += f"    Error:\n{stderr_str}\n"
+
+            client.close()
+            success = True
+
+        except Exception as e:
+            # Gestisci l'eccezione e scrivi l'errore nel log in modo sicuro
+            with log_lock:
+                log.write(f"Host: {IP}\n") # Scrivi l'host in caso di errore
+                log.write(f"  Error: {e}\n")
+                log.write("  Result: encountered an error.\n\n")
+                log.flush()
+            color_print(f"Host: {IP}\n  Error: {e}\n  Result: encountered an error.\n", Colors.FAIL)
+            q.task_done()
+            continue  # Passa all'host successivo
+
+        finally:
+            with log_lock:
+                if success:
+                    log_entry = host_log + "  Result: updated successfully.\n\n"
+                    # Scrivi solo la parte finale del risultato e forza lo svuotamento del buffer
+                    log.write("  Result: updated successfully.\n\n")
+                    log.flush()  # Forza la scrittura immediata
+                    color_print(host_log + "  Result: updated successfully.\n", Colors.OKGREEN)
+            q.task_done()
+    while True:
+        try:
+            IP, port = q.get(timeout=1)
+        except queue.Empty:
+            return
+
+        host_log = f"Host: {IP}\n"
+        success = False
+
+        try:
+            # Scrivi "Host: {IP}\n" prima di tentare la connessione, all'interno del lock
+            with log_lock:
+                log.write(f"Host: {IP}\n")
+                log.flush()
+            
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(hostname=IP, port=port, username=username, password=password, timeout=10, banner_timeout=10, auth_timeout=10, look_for_keys=False, allow_agent=False)
+
+            commands = [
+                '/system identity print',
+                '/system package update check-for-updates',
+                '/system package update install'
+            ]
+
+            for command in commands:
+                # Sincronizza l'accesso al file di log con log_lock
+                with log_lock:
                     log.write(f"  Command: {command}\n")
+                    log.flush()
+
+                stdin, stdout, stderr = client.exec_command(command)
+                stdout_str = stdout.read().decode()
+                stderr_str = stderr.read().decode()
+
+                # Scrivi nel log in tempo reale e forza lo svuotamento del buffer
+                with log_lock:
                     if stdout_str:
                         log.write(f"    Output:\n{stdout_str}\n")
                     if stderr_str:
@@ -92,6 +168,10 @@ def worker(q, log, username, password):
 
         except Exception as e:
             host_log += f"  Error: {e}\n"
+            # Gestisci l'eccezione e scrivi l'errore nel log in modo sicuro
+            with log_lock:
+                log.write(f"  Error: {e}\n")
+                log.flush()
         finally:
             with log_lock:
                 if success:
