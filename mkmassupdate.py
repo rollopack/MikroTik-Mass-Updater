@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v3.0.10
+#  MikroTik Mass Updater v4.1.5
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
-#  Ported to Python and paramiko by: Gabriel Rolland
+#  Ported to Python and API by: Gabriel Rolland
 ####################################################
 
-import paramiko
 import threading
 import queue
 import time
 import argparse
+import librouteros
 
 IP_LIST_FILE = 'list.txt'
 LOG_FILE = 'backuplog.txt'
@@ -20,8 +20,8 @@ MAX_THREADS = 5
 # Aggiunta del parser degli argomenti
 parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
 parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
-parser.add_argument("-u", "--username", required=True, help="SSH username")
-parser.add_argument("-p", "--password", required=True, help="SSH password")
+parser.add_argument("-u", "--username", required=True, help="API username")
+parser.add_argument("-p", "--password", required=True, help="API password")
 args = parser.parse_args()
 
 # Usa i colori solo se --no-colors NON è presente
@@ -52,143 +52,97 @@ def worker(q, log, username, password):
         except queue.Empty:
             return
 
-        host_log = f"Host: {IP}\n"
+        log_entry = ""  # Inizializza la stringa per l'intero log dell'host
+        print_entry = "" # Inizializza la stringa per l'intero print dell'host
         success = False
-
+        api = None
         try:
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(hostname=IP, port=port, username=username, password=password, timeout=10, banner_timeout=10, auth_timeout=10, look_for_keys=False, allow_agent=False)
+            # Connessione API sincrona usando librouteros
+            api = librouteros.connect(host=IP, username=username, password=password, port=int(port))
 
             commands = [
-                '/system identity print',
-                '/system package update check-for-updates',
-                '/system package update install'
+                '/system/identity/print',
+                '/system/resource/print',
+                '/system/package/update/check-for-updates',
+                '/system/package/update/print',
             ]
 
             for command in commands:
-                # Sincronizza l'accesso al file di log con log_lock
-                with log_lock:
-                    log.write(f"Host: {IP}\n")  # Spostata qui
-                    log.write(f"  Command: {command}\n")
-                    log.flush()
+                # Esegui il comando e ottieni la risposta
+                response = api(command)
 
-                stdin, stdout, stderr = client.exec_command(command)
-                stdout_str = stdout.read().decode()
-                stderr_str = stderr.read().decode()
+                if command == '/system/identity/print':
+                    for res in response:
+                        identity = res['name']
+                        log_entry += f"\nHost: {IP}\n"
+                        log_entry += f"  Identity: {identity}\n"
+                        print_entry += f"Host: {IP}\n"
+                        print_entry += f"  Identity: {identity}\n"
+                elif command == '/system/resource/print':
+                    for res in response:
+                        version = res['version']
+                        if 'stable' in res['version']:
+                            version += " (stable)"
+                        log_entry += f"  Version: {version}\n"
+                        print_entry += f"  Version: {version}\n"
+                elif command == '/system/package/update/check-for-updates':
+                    log_entry += f"  Checking for updates...\n"
+                    print_entry += f"  Checking for updates...\n"
+                    # Delay introdotto per dare il tempo al router di elaborare la richiesta
+                    time.sleep(3)
+                elif command == '/system/package/update/print':
+                    for res in response:
+                        status = res.get('status', '').lower()
+                        if 'new version is available' in status:
+                            log_entry += f"  Updates available for {IP}. Status: {status}\n"
+                            print_entry += f"  Updates available for {IP}. Status: {status}\n"
 
-                # Scrivi nel log in tempo reale e forza lo svuotamento del buffer
-                with log_lock:
-                    if stdout_str:
-                        log.write(f"    Output:\n{stdout_str}\n")
-                    if stderr_str:
-                        log.write(f"    Error:\n{stderr_str}\n")
-                    log.flush()  # Forza la scrittura immediata
+                            # Installa gli aggiornamenti
+                            try:
+                                update_package = api.path('system', 'package', 'update')
+                                tuple(update_package('install'))
 
-                host_log += f"  Command: {command}\n"
-                if stdout_str:
-                    host_log += f"    Output:\n{stdout_str}\n"
-                if stderr_str:
-                    host_log += f"    Error:\n{stderr_str}\n"
+                                log_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                print_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                success = True  # Aggiornamento riuscito
+                            except librouteros.exceptions.TrapError as e:
+                                log_entry += f"  Error installing updates for {IP}: {e}\n"
+                                print_entry += f"  Error installing updates for {IP}: {e}\n"
+                        elif 'no updates available' in status or 'system is already up to date' in status:
+                            log_entry += f"  No updates available for {IP}\n"
+                            print_entry += f"  No updates available for {IP}\n"
+                            success = True
+                        else:
+                            log_entry += f"  Status: {status}\n"
+                            print_entry += f"  Status: {status}\n"
 
-            client.close()
-            success = True
+                            # Installa comunque gli aggiornamenti
+                            try:
+                                update_package = api.path('system', 'package', 'update')
+                                tuple(update_package('install'))
 
-        except Exception as e:
-            # Gestisci l'eccezione e scrivi l'errore nel log in modo sicuro
-            with log_lock:
-                log.write(f"Host: {IP}\n") # Scrivi l'host in caso di errore
-                log.write(f"  Error: {e}\n")
-                log.write("  Result: encountered an error.\n\n")
-                log.flush()
-            color_print(f"Host: {IP}\n  Error: {e}\n  Result: encountered an error.\n", Colors.FAIL)
-            q.task_done()
-            continue  # Passa all'host successivo
-
+                                log_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                print_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                success = True  # Aggiornamento riuscito
+                            except librouteros.exceptions.TrapError as e:
+                                log_entry += f"  Error installing updates for {IP}: {e}\n"
+                                print_entry += f"  Error installing updates for {IP}: {e}\n"
+        except (librouteros.exceptions.TrapError, librouteros.exceptions.FatalError, Exception) as e:
+            log_entry += f"\nHost: {IP}\n"
+            log_entry += f"  Error: {type(e).__name__}: {e}\n"
+            log_entry += f"  Result: encountered an error.\n"
+            print_entry += f"Host: {IP}\n  Error: {type(e).__name__}: {e}\n"
         finally:
             with log_lock:
-                if success:
-                    log_entry = host_log + "  Result: updated successfully.\n\n"
-                    # Scrivi solo la parte finale del risultato e forza lo svuotamento del buffer
-                    log.write("  Result: updated successfully.\n\n")
-                    log.flush()  # Forza la scrittura immediata
-                    color_print(host_log + "  Result: updated successfully.\n", Colors.OKGREEN)
-            q.task_done()
-    while True:
-        try:
-            IP, port = q.get(timeout=1)
-        except queue.Empty:
-            return
-
-        host_log = f"Host: {IP}\n"
-        success = False
-
-        try:
-            # Scrivi "Host: {IP}\n" prima di tentare la connessione, all'interno del lock
-            with log_lock:
-                log.write(f"Host: {IP}\n")
+                log.write(log_entry)  # Scrivi l'intero log_entry dell'host nel file di log
                 log.flush()
-            
-            client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(hostname=IP, port=port, username=username, password=password, timeout=10, banner_timeout=10, auth_timeout=10, look_for_keys=False, allow_agent=False)
-
-            commands = [
-                '/system identity print',
-                '/system package update check-for-updates',
-                '/system package update install'
-            ]
-
-            for command in commands:
-                # Sincronizza l'accesso al file di log con log_lock
-                with log_lock:
-                    log.write(f"  Command: {command}\n")
-                    log.flush()
-
-                stdin, stdout, stderr = client.exec_command(command)
-                stdout_str = stdout.read().decode()
-                stderr_str = stderr.read().decode()
-
-                # Scrivi nel log in tempo reale e forza lo svuotamento del buffer
-                with log_lock:
-                    if stdout_str:
-                        log.write(f"    Output:\n{stdout_str}\n")
-                    if stderr_str:
-                        log.write(f"    Error:\n{stderr_str}\n")
-                    log.flush()  # Forza la scrittura immediata
-
-                host_log += f"  Command: {command}\n"
-                if stdout_str:
-                    host_log += f"    Output:\n{stdout_str}\n"
-                if stderr_str:
-                    host_log += f"    Error:\n{stderr_str}\n"
-
-            client.close()
-            success = True
-
-        except Exception as e:
-            host_log += f"  Error: {e}\n"
-            # Gestisci l'eccezione e scrivi l'errore nel log in modo sicuro
-            with log_lock:
-                log.write(f"  Error: {e}\n")
-                log.flush()
-        finally:
-            with log_lock:
                 if success:
-                    log_entry = host_log + "  Result: updated successfully.\n\n"
-                    # Scrivi solo la parte finale del risultato e forza lo svuotamento del buffer
-                    log.write("  Result: updated successfully.\n\n")
-                    log.flush()  # Forza la scrittura immediata
-                    color_print(host_log + "  Result: updated successfully.\n", Colors.OKGREEN)
+                    color_print(print_entry + "  Result: updated successfully.\n", Colors.OKGREEN)
                 else:
-                    log_entry = host_log + "  Result: encountered an error.\n\n"
-                    # Scrivi solo la parte finale del risultato e forza lo svuotamento del buffer
-                    log.write("  Result: encountered an error.\n\n")
-                    log.flush()  # Forza la scrittura immediata
-                    color_print(host_log + "  Result: encountered an error.\n", Colors.FAIL)
+                    color_print(print_entry + "  Result: encountered an error.\n", Colors.FAIL)
             q.task_done()
 
-log_lock = threading.Lock() # Inizializzazione del lock per il log
+log_lock = threading.Lock()
 
 # Inizializzazione della coda e dei thread
 q = queue.Queue()
@@ -199,12 +153,12 @@ with open(LOG_FILE, 'w') as log:
     log.write("-- Starting job --\n\n")
     log.flush()
 
-    color_print("-- Starting job --\n", Colors.OKGREEN)
+    color_print("-- Starting job --\n", Colors.UNDERLINE)
 
     with open(IP_LIST_FILE, 'r') as f:
         for line in f:
             IP, _, port = line.strip().partition(':')
-            q.put((IP, int(port or 22)))
+            q.put((IP, int(port or 8728)))
 
     # Avvia i thread, passando l'oggetto 'log', username e password come argomento
     for _ in range(MAX_THREADS):
@@ -223,4 +177,4 @@ with open(LOG_FILE, 'w') as log:
     log.write("-- Job finished --\n")
     log.flush()
 
-color_print("-- Job finished --\n", Colors.OKGREEN)
+color_print("-- Job finished --\n", Colors.UNDERLINE)
