@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.1.5
+#  MikroTik Mass Updater v4.1.6
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -113,10 +113,7 @@ def worker(q, log, username, password):
                             print_entry += f"  No updates available for {IP}\n"
                             success = True
                         else:
-                            log_entry += f"  Status: {status}\n"
-                            print_entry += f"  Status: {status}\n"
-
-                            # Installa comunque gli aggiornamenti
+                            # Installa gli aggiornamenti
                             try:
                                 update_package = api.path('system', 'package', 'update')
                                 tuple(update_package('install'))
