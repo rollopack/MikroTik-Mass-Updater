@@ -42,6 +42,7 @@ You can adapt the script to send any other commands you need.
 *   `--no-colors`: Disables colored output on the screen.
 *   `-u` or `--username`: Specifies the API username. **(Required)**
 *   `-p` or `--password`: Specifies the API password. **(Required)**
+*   `-t` or `--threads`: Specifies the number of threads to use. Default is `10`.
 
 ## Usage
 
@@ -56,10 +57,10 @@ You can adapt the script to send any other commands you need.
         python mkmassupdate.py -u your_username -p your_password
         ```
 
-    *   **Without colors:**
+    *   **Without colors and with 20 thread:**
 
         ```bash
-        python mkmassupdate.py --no-colors -u your_username -p your_password
+        python mkmassupdate.py --no-colors -u your_username -p your_password --threads 20
         ```
 
     Replace `your_username` and `your_password` with your actual credentials.
