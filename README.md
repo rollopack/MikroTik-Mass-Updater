@@ -1,13 +1,14 @@
 # MikroTik Mass Updater
 
-This is a Python script to send commands to multiple Mikrotik devices via the API. It provides colored output (optional) and detailed logging.
+This is a Python script to send commands to multiple Mikrotik devices via the API. 
+It provides colored output (optional) and detailed logging.
 
 This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
 
 **Key Features:**
 
 *   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API, which is generally more efficient and provides more functionality than SSH.
-*   **Concurrent operation:** Uses threads to connect to multiple devices simultaneously, significantly reducing the execution time.
+*   **Concurrent operation:** Uses threads to connect to multiple devices simultaneously, significantly reducing the execution time. The number of threads can be adjusted using the `--threads` option to optimize performance based on your system's capabilities.
 *   **Output grouped by host:** Results are clearly grouped by host, both on-screen and in the log file.
 *   **Colored output (optional):** The on-screen output can be colored for better readability, highlighting hosts, commands, output, and errors. Colors can be turned on or off with the `--no-colors` command-line option.
 *   **Detailed logging:** Logs all commands sent, output received, and errors encountered to a log file (`backuplog.txt`).
@@ -15,7 +16,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Idempotent Update Logic**: Attempts to install updates regardless of the current status. Includes cases where status may be unclear or device already updated.
 
 
-By default, the script checks for updates and installs them if the router does not refuse the operation.
+By default, the script checks for updates and installs them.
 You can adapt the script to send any other commands you need.
 
 ## Requirements
@@ -39,10 +40,10 @@ You can adapt the script to send any other commands you need.
 
 ## Options
 
-*   `--no-colors`: Disables colored output on the screen.
 *   `-u` or `--username`: Specifies the API username. **(Required)**
 *   `-p` or `--password`: Specifies the API password. **(Required)**
 *   `-t` or `--threads`: Specifies the number of threads to use. Default is `10`.
+*   `--no-colors`: Disables colored output on the screen.
 
 ## Usage
 
