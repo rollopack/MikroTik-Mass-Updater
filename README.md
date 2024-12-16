@@ -1,9 +1,8 @@
 # MikroTik Mass Updater
 
-This is a Python script to send commands to multiple Mikrotik devices via the API. 
-It provides colored output (optional) and detailed logging.
+This is a Python script to send commands to multiple Mikrotik devices via the API. It provides colored output (optional) and detailed logging.
 
-This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
+This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland, and further improved by other contributors.
 
 **Key Features:**
 
@@ -13,8 +12,9 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Colored output (optional):** The on-screen output can be colored for better readability, highlighting hosts, commands, output, and errors. Colors can be turned on or off with the `--no-colors` command-line option.
 *   **Detailed logging:** Logs all commands sent, output received, and errors encountered to a log file (`backuplog.txt`).
 *   **Error handling:** The script handles connection errors, API errors, and other exceptions gracefully.
-*   **Idempotent Update Logic**: Attempts to install updates regardless of the current status. Includes cases where status may be unclear or device already updated.
-
+*   **Idempotent Update Logic:** Attempts to install updates regardless of the current status. Includes cases where status may be unclear or device already updated.
+*   **Dry-run mode:** Allows to test the script and see the log output without actually installing updates using the `--dry-run` option.
+*   **Configurable timeout**: Allows to change default timeout using the `--timeout` option.
 
 By default, the script checks for updates and installs them.
 You can adapt the script to send any other commands you need.
@@ -43,7 +43,9 @@ You can adapt the script to send any other commands you need.
 *   `-u` or `--username`: Specifies the API username. **(Required)**
 *   `-p` or `--password`: Specifies the API password. **(Required)**
 *   `-t` or `--threads`: Specifies the number of threads to use. Default is `10`.
+*   `--timeout`: Specifies the connection timeout in seconds. Default is `15`.
 *   `--no-colors`: Disables colored output on the screen.
+*   `--dry-run`: Enables dry-run mode. Skips the actual installation of updates.
 
 ## Usage
 
@@ -52,16 +54,16 @@ You can adapt the script to send any other commands you need.
 3. Edit or create the `list.txt` file with the IP addresses of your Mikrotik devices (one per line, in the format `IP` or `IP:port` if you are not using the default port 8728).
 4. Run the script, providing your username and password as arguments:
 
-    *   **With colors (default):**
+    *   **With colors (default) and specific timeout:**
 
         ```bash
-        python mkmassupdate.py -u your_username -p your_password
+        python mkmassupdate.py -u your_username -p your_password --timeout 30
         ```
 
-    *   **Without colors and with 20 thread:**
+    *   **Without colors, with 20 threads and dry-run mode:**
 
         ```bash
-        python mkmassupdate.py --no-colors -u your_username -p your_password --threads 20
+        python mkmassupdate.py --no-colors -u your_username -p your_password -t 20 --dry-run
         ```
 
     Replace `your_username` and `your_password` with your actual credentials.

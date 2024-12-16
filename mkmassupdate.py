@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.2
+#  MikroTik Mass Updater v4.2.2
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -12,6 +12,7 @@ import queue
 import time
 import argparse
 import librouteros
+import traceback
 
 IP_LIST_FILE = 'list.txt'
 LOG_FILE = 'backuplog.txt'
@@ -20,7 +21,9 @@ parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
 parser.add_argument("-u", "--username", required=True, help="API username")
 parser.add_argument("-p", "--password", required=True, help="API password")
 parser.add_argument("-t", "--threads", type=int, default=10, help="Number of threads to use")
+parser.add_argument("--timeout", type=int, default=15, help="Connection timeout in seconds")
 parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
+parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
 args = parser.parse_args()
 
 USE_COLORS = not args.no_colors
@@ -41,24 +44,24 @@ def color_print(text, color=None, flush=True):
     else:
         print(text, flush=flush)
 
-def worker(q, log, username, password, stop_event):
+def worker(q, log, username, password, stop_event, timeout, dry_run):
+    results = []
     while not stop_event.is_set():
         try:
             IP, port = q.get(timeout=1)
         except queue.Empty:
             return
 
-        log_entry = ""
-        print_entry = ""
+        entry_lines = []
         success = False
         api = None
         try:
             api = librouteros.connect(
-                host=IP, 
-                username=username, 
-                password=password, 
+                host=IP,
+                username=username,
+                password=password,
                 port=int(port),
-                timeout=5
+                timeout=timeout
             )
             commands = [
                 '/system/identity/print',
@@ -72,68 +75,67 @@ def worker(q, log, username, password, stop_event):
                 if command == '/system/identity/print':
                     for res in response:
                         identity = res['name']
-                        log_entry += f"\nHost: {IP}\n"
-                        log_entry += f"  Identity: {identity}\n"
-                        print_entry += f"Host: {IP}\n"
-                        print_entry += f"  Identity: {identity}\n"
+                        entry_lines.append(f"\nHost: {IP}\n  Identity: {identity}\n")
                 elif command == '/system/resource/print':
                     for res in response:
                         version = res['version']
                         if 'stable' in res['version']:
                             version += " (stable)"
-                        log_entry += f"  Version: {version}\n"
-                        print_entry += f"  Version: {version}\n"
+                        entry_lines.append(f"  Version: {version}\n")
                 elif command == '/system/package/update/check-for-updates':
-                    log_entry += f"  Checking for updates...\n"
-                    print_entry += f"  Checking for updates...\n"
+                    #entry_lines.append(f"  Checking for updates...\n")
                     while True:
                         status_response = api('/system/package/update/print')
                         if any('status' in res and 'checking' not in res['status'].lower() for res in status_response):
                             break
-                        time.sleep(1)
                 elif command == '/system/package/update/print':
                     for res in response:
                         status = res.get('status', '').lower()
                         if 'new version is available' in status:
-                            log_entry += f"  Updates available for {IP}. Status: {status}\n"
-                            print_entry += f"  Updates available for {IP}. Status: {status}\n"
+                            entry_lines.append(f"  Updates available for {IP}. Status: {status}\n")
+
+                            # Installa gli aggiornamenti
                             try:
-                                update_package = api.path('system', 'package', 'update')
-                                tuple(update_package('install'))
-                                log_entry += f"  Updates installed for {IP}. Rebooting...\n"
-                                print_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                if not dry_run:
+                                    update_package = api.path('system', 'package', 'update')
+                                    tuple(update_package('install'))
+                                    entry_lines.append(f"  Updates installed for {IP}. Rebooting...\n")
+                                else:
+                                    entry_lines.append(f"  Dry-run: Skipping installation of updates for {IP}.\n")
                                 success = True
                             except librouteros.exceptions.TrapError as e:
-                                log_entry += f"  Error installing updates for {IP}: {e}\n"
-                                print_entry += f"  Error installing updates for {IP}: {e}\n"
+                                entry_lines.append(f"  Error installing updates for {IP}: {e}\n")
                         elif 'no updates available' in status or 'system is already up to date' in status:
-                            log_entry += f"  No updates available for {IP}\n"
-                            print_entry += f"  No updates available for {IP}\n"
+                            entry_lines.append(f"  No updates available for {IP}\n")
                             success = True
                         else:
+                            entry_lines.append(f"  Status: {status}\n")
+
+                            # Installa comunque gli aggiornamenti
                             try:
-                                update_package = api.path('system', 'package', 'update')
-                                tuple(update_package('install'))
-                                log_entry += f"  Updates installed for {IP}. Rebooting...\n"
-                                print_entry += f"  Updates installed for {IP}. Rebooting...\n"
+                                if not dry_run:
+                                    update_package = api.path('system', 'package', 'update')
+                                    tuple(update_package('install'))
+                                    entry_lines.append(f"  Updates installed for {IP}. Rebooting...\n")
+                                else:
+                                    entry_lines.append(f"  Dry-run: Skipping installation of updates for {IP}.\n")
                                 success = True
                             except librouteros.exceptions.TrapError as e:
-                                log_entry += f"  Error installing updates for {IP}: {e}\n"
-                                print_entry += f"  Error installing updates for {IP}: {e}\n"
+                                entry_lines.append(f"  Error installing updates for {IP}: {e}\n")
+
         except (librouteros.exceptions.TrapError, librouteros.exceptions.FatalError, Exception) as e:
-            log_entry += f"\nHost: {IP}\n"
-            log_entry += f"  Error: {type(e).__name__}: {e}\n"
-            log_entry += f"  Result: encountered an error.\n"
-            print_entry += f"Host: {IP}\n  Error: {type(e).__name__}: {e}\n"
+            entry_lines.append(f"\nHost: {IP}\n  Error: {type(e).__name__}: {e}\n")
         finally:
+            entry = "".join(entry_lines)
             with log_lock:
-                log.write(log_entry)
+                log.write(entry)
                 log.flush()
                 if success:
-                    color_print(print_entry + "  Result: updated successfully.\n", Colors.OKGREEN)
+                    color_print(entry + "  Result: updated successfully.\n", Colors.OKGREEN)
                 else:
-                    color_print(print_entry + "  Result: encountered an error.\n", Colors.FAIL)
+                    color_print(entry + "  Result: encountered an error.", Colors.FAIL)
             q.task_done()
+            results.append({"IP": IP, "success": success})
 
 log_lock = threading.Lock()
 q = queue.Queue()
@@ -155,7 +157,7 @@ try:
             q.put((IP, int(port or 8728)))
 
     for _ in range(args.threads):
-        t = threading.Thread(target=worker, args=(q, log, args.username, args.password, stop_event))
+        t = threading.Thread(target=worker, args=(q, log, args.username, args.password, stop_event, args.timeout, args.dry_run))
         threads.append(t)
         t.start()
 
