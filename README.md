@@ -14,10 +14,11 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Error handling:** The script handles connection errors, API errors, and other exceptions gracefully.
 *   **Idempotent Update Logic:** Attempts to install updates regardless of the current status. Includes cases where status may be unclear or device already updated.
 *   **Dry-run mode:** Allows to test the script and see the log output without actually installing updates using the `--dry-run` option.
-*   **Configurable timeout**: Allows to change default timeout using the `--timeout` option.
+*   **Configurable timeout:** Allows to change default timeout using the `--timeout` option.
+*   **Custom Commands:** You can add custom commands to be executed on the Mikrotik devices directly within the `custom_commands` array in the script for tailored operations.
 
-By default, the script checks for updates and installs them.
-You can adapt the script to send any other commands you need.
+By default, the script checks for updates and installs them if the router does not refuse the operation.
+The script will execute also the custom commands listed in `custom_commands` array.
 
 ## Requirements
 
@@ -27,7 +28,9 @@ You can adapt the script to send any other commands you need.
     ```bash
     pip install librouteros
     ```
+
     or
+
     ```bash
     sudo apt install python3-librouteros
     ```
@@ -36,7 +39,8 @@ You can adapt the script to send any other commands you need.
 
 *   API access must be enabled on your Mikrotik devices (usually on port 8728).
 *   The log file (`backuplog.txt`) is overwritten each time you run the script.
-*   By default the script uses port 8728, otherwise you can specify the desired port `IP:port`
+*   By default the script uses port 8728, otherwise you can specify the desired port `IP:port`.
+*   Default timeout is 15 seconds, change it with `--timeout` option.
 
 ## Options
 
@@ -52,18 +56,19 @@ You can adapt the script to send any other commands you need.
 1. Download `mkmassupdate.py`
 2. Install the `librouteros` library if it's not already installed
 3. Edit or create the `list.txt` file with the IP addresses of your Mikrotik devices (one per line, in the format `IP` or `IP:port` if you are not using the default port 8728).
+4. Edit the `custom_commands` array in `mkmassupdate.py` to add any custom commands you want to execute.
 4. Run the script, providing your username and password as arguments:
 
-    *   **With colors (default) and specific timeout:**
+    *   **With colors (default), specific timeout and dry-run mode:**
 
         ```bash
-        python mkmassupdate.py -u your_username -p your_password --timeout 30
+        python mkmassupdate.py -u your_username -p your_password --timeout 30 --dry-run
         ```
 
-    *   **Without colors, with 20 threads and dry-run mode:**
+    *   **Without colors, with 20 threads:**
 
         ```bash
-        python mkmassupdate.py --no-colors -u your_username -p your_password -t 20 --dry-run
+        python mkmassupdate.py --no-colors -u your_username -p your_password -t 20
         ```
 
     Replace `your_username` and `your_password` with your actual credentials.
@@ -76,3 +81,7 @@ You can adapt the script to send any other commands you need.
 192.168.1.10:8729
 192.168.1.15
 ```
+
+## Disclaimer
+
+This script is provided as-is, without warranty of any kind. Use it at your own risk. Always test thoroughly in a non-production environment before deploying to production devices.
