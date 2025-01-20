@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.3.0
+#  MikroTik Mass Updater v4.3.1
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -80,59 +80,64 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
 
             for command in commands:
                 try:
-                    response = api(command)
                     if command == '/system/identity/print':
+                        response = list(api(command))
                         for res in response:
                             identity = res['name']
                             entry_lines.append(f"\nHost: {IP}\n  Identity: {identity}\n")
+                    
                     elif command == '/system/resource/print':
+                        response = list(api(command))
                         for res in response:
                             version = res['version']
                             if 'stable' in res['version']:
                                 version += " (stable)"
                             entry_lines.append(f"  Version: {version}\n")
+                    
                     elif command == '/system/package/update/check-for-updates':
-                        #entry_lines.append(f"  Checking for updates...\n")
-                        while True:
-                            status_response = api('/system/package/update/print')
-                            if any('status' in res and 'checking' not in res['status'].lower() for res in status_response):
-                                break
+                        entry_lines.append("  Checking for updates...\n")
+                        list(api(command))  # Converti il generatore in lista
+                        # Wait for check to complete
+                        for _ in range(10):  # timeout after 10 attempts
+                            time.sleep(1)
+                            status_response = list(api('/system/package/update/print'))
+                            if status_response:  # Verifica che ci sia almeno un elemento
+                                status = status_response[0].get('status', '').lower()
+                                if 'checking' not in status:
+                                    entry_lines.append(f"  Check-for-updates completed. Status: {status}\n")
+                                    break
+                    
                     elif command == '/system/package/update/print':
+                        response = list(api(command))
                         for res in response:
                             status = res.get('status', '').lower()
-                            if 'new version is available' in status:
-                                entry_lines.append(f"  Updates available. Status: {status}\n")
-
-                                # Installa gli aggiornamenti
+                            channel = res.get('channel', '')
+                            installed_version = res.get('installed-version', '')
+                            latest_version = res.get('latest-version', '')
+                            
+                            #entry_lines.append(f"  Update status: {status}\n")
+                            #entry_lines.append(f"  Channel: {channel}\n")
+                            entry_lines.append(f"  Installed version: {installed_version}\n")
+                            #entry_lines.append(f"  Latest version: {latest_version}\n")
+                            
+                            if latest_version and latest_version != installed_version:
+                                entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
                                 try:
                                     if not dry_run:
                                         update_package = api.path('system', 'package', 'update')
-                                        tuple(update_package('install'))
+                                        list(update_package('install'))  # Converti il generatore in lista
                                         entry_lines.append(f"  Updates installed. Rebooting...\n")
                                     else:
                                         entry_lines.append(f"  Dry-run: Skipping installation of updates.\n")
                                     success = True
                                 except librouteros.exceptions.TrapError as e:
                                     entry_lines.append(f"  Error installing updates: {e}\n")
-                            elif 'no updates available' in status or 'system is already up to date' in status:
-                                entry_lines.append(f"  No updates available\n")
-                                success = True
+                                    success = False
                             else:
-                                entry_lines.append(f"  Status: {status}\n")
-
-                                # Installa comunque gli aggiornamenti
-                                try:
-                                    if not dry_run:
-                                        update_package = api.path('system', 'package', 'update')
-                                        tuple(update_package('install'))
-                                        entry_lines.append(f"  Updates installed. Rebooting...\n")
-                                    else:
-                                        entry_lines.append(f"  Dry-run: Skipping installation of updates.\n")
-                                    success = True
-                                except librouteros.exceptions.TrapError as e:
-                                    entry_lines.append(f"  Error installing updates: {e}\n")
+                                #entry_lines.append("  No updates available\n")
+                                success = True
                     else:
-                        # Gestione comandi personalizzati
+                        response = list(api(command))  # Converti il generatore in lista
                         entry_lines.append(f"  Command: {command}\n")
                         entry_lines.append(f"    Output:\n")
                         for res in response:
@@ -150,7 +155,7 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                 log.write(entry)
                 log.flush()
                 if success:
-                    color_print(entry + "  Result: OK", Colors.OKGREEN)
+                    color_print(entry, Colors.OKGREEN)
                 else:
                     color_print(entry + "  Result: Error", Colors.FAIL)
             q.task_done()
