@@ -82,6 +82,9 @@ The script will execute also the custom commands listed in `custom_commands` arr
 192.168.1.15
 ```
 
+## Screenshot
+![ScreenShot](./screenshot.png)
+
 ## Disclaimer
 
 This script is provided as-is, without warranty of any kind. Use it at your own risk. Always test thoroughly in a non-production environment before deploying to production devices.

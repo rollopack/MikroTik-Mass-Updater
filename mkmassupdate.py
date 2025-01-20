@@ -117,7 +117,7 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                             
                             #entry_lines.append(f"  Update status: {status}\n")
                             #entry_lines.append(f"  Channel: {channel}\n")
-                            entry_lines.append(f"  Installed version: {installed_version}\n")
+                            #entry_lines.append(f"  Installed version: {installed_version}\n")
                             #entry_lines.append(f"  Latest version: {latest_version}\n")
                             
                             if latest_version and latest_version != installed_version:
