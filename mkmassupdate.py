@@ -5,6 +5,7 @@
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
+#  Optimized and corrected by: Bard
 ####################################################
 
 import threading
@@ -16,7 +17,6 @@ import librouteros
 IP_LIST_FILE = 'list.txt'
 LOG_FILE = 'backuplog.txt'
 custom_commands = [
-    #'/system/routerboard/print',
     #'/ip/firewall/filter/print',
 ]
 
@@ -68,9 +68,10 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                 port=int(port),
                 timeout=timeout
             )
-            
+
             default_commands = [
                 '/system/identity/print',
+                '/system/routerboard/print',
                 '/system/resource/print',
                 '/system/package/update/check-for-updates',
                 '/system/package/update/print',
@@ -85,6 +86,12 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                         for res in response:
                             identity = res['name']
                             entry_lines.append(f"\nHost: {IP}\n  Identity: {identity}\n")
+                    
+                    elif command == '/system/routerboard/print':
+                        response = list(api(command))
+                        for res in response:
+                            model_name = res.get('board-name', res.get('model', 'N/A'))
+                            entry_lines.append(f"  Model: {model_name}\n")
                     
                     elif command == '/system/resource/print':
                         response = list(api(command))
@@ -114,12 +121,7 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                             channel = res.get('channel', '')
                             installed_version = res.get('installed-version', '')
                             latest_version = res.get('latest-version', '')
-                            
-                            #entry_lines.append(f"  Update status: {status}\n")
-                            #entry_lines.append(f"  Channel: {channel}\n")
-                            #entry_lines.append(f"  Installed version: {installed_version}\n")
-                            #entry_lines.append(f"  Latest version: {latest_version}\n")
-                            
+
                             if latest_version and latest_version != installed_version:
                                 entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
                                 try:
@@ -134,8 +136,8 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                                     entry_lines.append(f"  Error installing updates: {e}\n")
                                     success = False
                             else:
-                                #entry_lines.append("  No updates available\n")
                                 success = True
+                    
                     else:
                         response = list(api(command))  # Converti il generatore in lista
                         entry_lines.append(f"  Command: {command}\n")
@@ -185,7 +187,7 @@ try:
         threads.append(t)
         t.start()
 
-    q.join()  
+    q.join()
 
 except KeyboardInterrupt:
     color_print("Interrupted by user. Shutting down...", Colors.WARNING)
