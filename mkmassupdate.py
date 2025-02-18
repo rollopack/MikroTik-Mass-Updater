@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.3.1
+#  MikroTik Mass Updater v4.4
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
-#  Optimized and corrected by: Bard
 ####################################################
 
 import threading
@@ -16,9 +15,15 @@ import librouteros
 
 IP_LIST_FILE = 'list.txt'
 LOG_FILE = 'backuplog.txt'
-custom_commands = [
-    #'/ip/firewall/filter/print',
-]
+custom_commands = [];
+# custom_commands = [
+#     ('/user/add', {
+#         'name': 'newuser',
+#         'password': '#######',
+#         'group': 'read'
+#     }),
+#     '/user/print',
+# ]
 
 parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
 parser.add_argument("-u", "--username", required=True, help="API username")
@@ -81,20 +86,23 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
 
             for command in commands:
                 try:
-                    if command == '/system/identity/print':
+                    if isinstance(command, tuple):
+                        cmd, params = command
+                        response = list(api(cmd, **params))
+                    else:
                         response = list(api(command))
+                    
+                    if command == '/system/identity/print':
                         for res in response:
                             identity = res['name']
                             entry_lines.append(f"\nHost: {IP}\n  Identity: {identity}\n")
                     
                     elif command == '/system/routerboard/print':
-                        response = list(api(command))
                         for res in response:
                             model_name = res.get('board-name', res.get('model', 'N/A'))
                             entry_lines.append(f"  Model: {model_name}\n")
                     
                     elif command == '/system/resource/print':
-                        response = list(api(command))
                         for res in response:
                             version = res['version']
                             if 'stable' in res['version']:
@@ -115,7 +123,6 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                                     break
                     
                     elif command == '/system/package/update/print':
-                        response = list(api(command))
                         for res in response:
                             status = res.get('status', '').lower()
                             channel = res.get('channel', '')
@@ -139,7 +146,6 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                                 success = True
                     
                     else:
-                        response = list(api(command))  # Converti il generatore in lista
                         entry_lines.append(f"  Command: {command}\n")
                         entry_lines.append(f"    Output:\n")
                         for res in response:

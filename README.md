@@ -73,6 +73,44 @@ The script will execute also the custom commands listed in `custom_commands` arr
 
     Replace `your_username` and `your_password` with your actual credentials.
 
+## Custom Commands Format
+
+The `custom_commands` array in the script supports two types of commands:
+
+1. **Simple commands** - Just the command string:
+   ```python
+   '/interface/print'
+   ```
+
+2. **Commands with parameters** - A tuple containing the command and a dictionary of parameters:
+   ```python
+   ('/user/add', {
+       'name': 'newuser',
+       'password': 'userpass',
+       'group': 'read'
+   })
+   ```
+
+Example of custom_commands array:
+```python
+custom_commands = [
+    # Simple command
+    '/system/clock/print',
+    
+    # Command with parameters
+    ('/user/add', {
+        'name': 'monitor',
+        'password': 'secret123',
+        'group': 'read'
+    }),
+    
+    # Another simple command
+    '/user/print'
+]
+```
+
+Note: Parameters must match the exact names expected by the MikroTik API for that command.
+
 ## Example `list.txt` file
 
 ```
