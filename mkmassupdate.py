@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.4
+#  MikroTik Mass Updater v4.5
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -54,11 +54,48 @@ def color_print(text, color=None, flush=True):
     else:
         print(text, flush=flush)
 
-def worker(q, log, username, password, stop_event, timeout, dry_run):
+def execute_with_retry(api, command, params=None, max_retries=3, retry_delay=5):
+    """Execute a command with retry logic"""
+    last_exception = None
+    for attempt in range(max_retries):
+        try:
+            if params is not None:
+                return list(api(command, **params))
+            return list(api(command))
+        except (librouteros.exceptions.TimeoutError, librouteros.exceptions.ConnectionError) as e:
+            last_exception = e
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                continue
+            raise last_exception
+
+def parse_host_line(line):
+    """Parse a line from list.txt and return (ip, port, username, password)"""
+    # Format: IP[:PORT][|USERNAME|PASSWORD]
+    parts = line.strip().split('|')
+    
+    # Parse IP and port
+    ip_port = parts[0].split(':')
+    ip = ip_port[0]
+    port = int(ip_port[1]) if len(ip_port) > 1 else 8728
+    
+    # Parse optional credentials
+    username = parts[1] if len(parts) > 1 else None
+    password = parts[2] if len(parts) > 2 else None
+    
+    return ip, port, username, password
+
+def worker(q, log, default_username, default_password, stop_event, timeout, dry_run):
     results = []
     while not stop_event.is_set():
         try:
-            IP, port = q.get(timeout=1)
+            host_info = q.get(timeout=1)
+            IP, port, custom_username, custom_password = host_info
+            
+            # Use custom credentials if provided, otherwise use defaults
+            username = custom_username or default_username
+            password = custom_password or default_password
+
         except queue.Empty:
             return
 
@@ -66,12 +103,13 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
         success = False
         api = None
         try:
+            # Aumentiamo il timeout di connessione
             api = librouteros.connect(
                 host=IP,
                 username=username,
                 password=password,
                 port=int(port),
-                timeout=timeout
+                timeout=max(30, timeout)  # Minimo 30 secondi per la connessione
             )
 
             default_commands = [
@@ -88,9 +126,9 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                 try:
                     if isinstance(command, tuple):
                         cmd, params = command
-                        response = list(api(cmd, **params))
+                        response = execute_with_retry(api, cmd, params)
                     else:
-                        response = list(api(command))
+                        response = execute_with_retry(api, command)
                     
                     if command == '/system/identity/print':
                         for res in response:
@@ -111,16 +149,19 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                     
                     elif command == '/system/package/update/check-for-updates':
                         entry_lines.append("  Checking for updates...\n")
-                        list(api(command))  # Converti il generatore in lista
-                        # Wait for check to complete
-                        for _ in range(10):  # timeout after 10 attempts
-                            time.sleep(1)
-                            status_response = list(api('/system/package/update/print'))
-                            if status_response:  # Verifica che ci sia almeno un elemento
-                                status = status_response[0].get('status', '').lower()
-                                if 'checking' not in status:
-                                    entry_lines.append(f"  Check-for-updates completed. Status: {status}\n")
-                                    break
+                        execute_with_retry(api, command)
+                        # Wait for check to complete with increased timeout
+                        for _ in range(15):  # increased from 10 to 15 attempts
+                            time.sleep(2)  # increased from 1 to 2 seconds
+                            try:
+                                status_response = execute_with_retry(api, '/system/package/update/print', max_retries=2)
+                                if status_response:
+                                    status = status_response[0].get('status', '').lower()
+                                    if 'checking' not in status:
+                                        entry_lines.append(f"  Check-for-updates completed. Status: {status}\n")
+                                        break
+                            except librouteros.exceptions.TimeoutError:
+                                continue
                     
                     elif command == '/system/package/update/print':
                         for res in response:
@@ -133,29 +174,27 @@ def worker(q, log, username, password, stop_event, timeout, dry_run):
                                 entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
                                 try:
                                     if not dry_run:
+                                        time.sleep(2)  # Breve pausa prima dell'aggiornamento
                                         update_package = api.path('system', 'package', 'update')
-                                        list(update_package('install'))  # Converti il generatore in lista
+                                        execute_with_retry(update_package, 'install', max_retries=2)
                                         entry_lines.append(f"  Updates installed. Rebooting...\n")
                                     else:
                                         entry_lines.append(f"  Dry-run: Skipping installation of updates.\n")
                                     success = True
-                                except librouteros.exceptions.TrapError as e:
-                                    entry_lines.append(f"  Error installing updates: {e}\n")
+                                except Exception as e:
+                                    entry_lines.append(f"  Error installing updates: {type(e).__name__}: {e}\n")
                                     success = False
                             else:
                                 success = True
-                    
-                    else:
-                        entry_lines.append(f"  Command: {command}\n")
-                        entry_lines.append(f"    Output:\n")
-                        for res in response:
-                            entry_lines.append("      " + str(res) + "\n")
 
-                except (librouteros.exceptions.TrapError, librouteros.exceptions.FatalError, Exception) as e:
+                except librouteros.exceptions.TimeoutError as e:
+                    entry_lines.append(f"  Error executing command {command}: TimeoutError after retries\n")
+                    success = False
+                except Exception as e:
                     entry_lines.append(f"  Error executing command {command}: {type(e).__name__}: {e}\n")
                     success = False
 
-        except (librouteros.exceptions.TrapError, librouteros.exceptions.FatalError, Exception) as e:
+        except Exception as e:
             entry_lines.append(f"\nHost: {IP}\n  Error: {type(e).__name__}: {e}\n")
         finally:
             entry = "".join(entry_lines)
@@ -185,8 +224,9 @@ try:
 
     with open(IP_LIST_FILE, 'r') as f:
         for line in f:
-            IP, _, port = line.strip().partition(':')
-            q.put((IP, int(port or 8728)))
+            if line.strip() and not line.startswith('#'):
+                host_info = parse_host_line(line)
+                q.put(host_info)
 
     for _ in range(args.threads):
         t = threading.Thread(target=worker, args=(q, log, args.username, args.password, stop_event, args.timeout, args.dry_run))

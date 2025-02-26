@@ -113,12 +113,23 @@ Note: Parameters must match the exact names expected by the MikroTik API for tha
 
 ## Example `list.txt` file
 
+The file supports three formats:
 ```
+# 1. IP only (uses default port 8728 and default credentials)
 192.168.1.1
-192.168.1.2
-192.168.1.10:8729
-192.168.1.15
+
+# 2. IP with custom port
+192.168.1.2:8729
+
+# 3. IP[:port] with custom credentials (separated by |)
+192.168.1.3|admin|password123
+192.168.1.4:8729|admin|password123
+
+# Lines starting with # are comments
+# Empty lines are ignored
 ```
+
+Note: Custom credentials are optional. If not specified, the credentials provided as command line parameters will be used.
 
 ## Screenshot
 ![ScreenShot](./screenshot.png)
