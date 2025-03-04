@@ -50,6 +50,7 @@ The script will execute also the custom commands listed in `custom_commands` arr
 *   `--timeout`: Specifies the connection timeout in seconds. Default is `15`.
 *   `--no-colors`: Disables colored output on the screen.
 *   `--dry-run`: Enables dry-run mode. Skips the actual installation of updates.
+*   `--start-line`: Start from this line number in list.txt (1-based). Default is `1`.
 
 ## Usage
 
@@ -72,6 +73,16 @@ The script will execute also the custom commands listed in `custom_commands` arr
         ```
 
     Replace `your_username` and `your_password` with your actual credentials.
+
+## Usage Examples
+
+```bash
+# Start from line 100 in list.txt
+python mkmassupdate.py -u admin -p password --start-line 100
+
+# Resume from line 50 with dry-run enabled
+python mkmassupdate.py -u admin -p password --start-line 50 --dry-run
+```
 
 ## Custom Commands Format
 

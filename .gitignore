@@ -1,0 +1,22 @@
+LICENSE
+
+# Log files
+backuplog.txt
+
+# Device list files
+list.txt
+list_copy.txt
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+venv/
+env/

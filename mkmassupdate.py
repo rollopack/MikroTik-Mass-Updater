@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.5
+#  MikroTik Mass Updater v4.5.1
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -32,11 +32,12 @@ parser.add_argument("-t", "--threads", type=int, default=10, help="Number of thr
 parser.add_argument("--timeout", type=int, default=15, help="Connection timeout in seconds")
 parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
 parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
+parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
 args = parser.parse_args()
 
 USE_COLORS = not args.no_colors
 
-# Definisci codici colore ANSI
+# Define ANSI color codes
 class Colors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -47,7 +48,7 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# Funzione per stampare con o senza colori e forzare lo svuotamento del buffer
+# Function to print with or without colors and force buffer flushing
 def color_print(text, color=None, flush=True):
     if USE_COLORS and color:
         print(f"{color}{text}{Colors.ENDC}", flush=flush)
@@ -64,6 +65,7 @@ def execute_with_retry(api, command, params=None, max_retries=3, retry_delay=5):
             return list(api(command))
         except (librouteros.exceptions.TimeoutError, librouteros.exceptions.ConnectionError) as e:
             last_exception = e
+            color_print(f"Attempt {attempt + 1} failed: {e}", Colors.WARNING)
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
@@ -103,13 +105,13 @@ def worker(q, log, default_username, default_password, stop_event, timeout, dry_
         success = False
         api = None
         try:
-            # Aumentiamo il timeout di connessione
+            # Increase the connection timeout
             api = librouteros.connect(
                 host=IP,
                 username=username,
                 password=password,
                 port=int(port),
-                timeout=max(30, timeout)  # Minimo 30 secondi per la connessione
+                timeout=max(30, timeout)  # Minimum 30 seconds for the connection
             )
 
             default_commands = [
@@ -158,7 +160,7 @@ def worker(q, log, default_username, default_password, stop_event, timeout, dry_
                                 if status_response:
                                     status = status_response[0].get('status', '').lower()
                                     if 'checking' not in status:
-                                        entry_lines.append(f"  Check-for-updates completed. Status: {status}\n")
+                                        entry_lines.append(f"  Check-for-updates completed.\n  Status: {status}\n")
                                         break
                             except librouteros.exceptions.TimeoutError:
                                 continue
@@ -174,7 +176,7 @@ def worker(q, log, default_username, default_password, stop_event, timeout, dry_
                                 entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
                                 try:
                                     if not dry_run:
-                                        time.sleep(2)  # Breve pausa prima dell'aggiornamento
+                                        time.sleep(2)  # Short pause before updating
                                         update_package = api.path('system', 'package', 'update')
                                         execute_with_retry(update_package, 'install', max_retries=2)
                                         entry_lines.append(f"  Updates installed. Rebooting...\n")
@@ -223,10 +225,11 @@ try:
     color_print("-- Starting job --", Colors.UNDERLINE)
 
     with open(IP_LIST_FILE, 'r') as f:
-        for line in f:
+        for i, line in enumerate(f, 1):
             if line.strip() and not line.startswith('#'):
-                host_info = parse_host_line(line)
-                q.put(host_info)
+                if i >= args.start_line:
+                    host_info = parse_host_line(line)
+                    q.put(host_info)
 
     for _ in range(args.threads):
         t = threading.Thread(target=worker, args=(q, log, args.username, args.password, stop_event, args.timeout, args.dry_run))

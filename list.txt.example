@@ -1,0 +1,17 @@
+# Example list.txt file
+# Format: IP[:PORT][|USERNAME|PASSWORD]
+
+# Default port and credentials
+192.168.1.1
+
+# Custom port
+192.168.1.2:8729
+
+# Custom credentials
+192.168.1.3|admin|password123
+
+# Custom port and credentials
+192.168.1.4:8729|admin|password123
+
+# Comments are supported
+# Empty lines are ignored
