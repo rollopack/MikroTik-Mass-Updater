@@ -104,31 +104,39 @@ The `custom_commands` list in the script supports two formats:
     ```
 
 **Example `custom_commands` list:**
+
 ```python
 custom_commands = [
-    '/system/clock/print',
-    ('/interface/set', {
-        'numbers': 'ether1',  # Assuming 'numbers' is how you identify the interface
-        'comment': 'Main WAN Link'
-    })
+'/system/clock/print',
+('/interface/set', {
+	'numbers': 'ether1',  # Assuming 'numbers' is how you identify the interface
+	'comment': 'Main WAN Link'
+})
 ]
-
+```
 Note: Parameter names must match MikroTik API specifications.
-IP List File Format (list.txt or custom)
+
+### IP List File Format (list.txt or custom)
 
 One entry per line. Supported formats:
 
-# IP only (uses default API port and script credentials)
-192.168.1.1
+*   **IP only** (uses default API port and script credentials)
+    ```
+    192.168.1.1
+    ```
 
-# IP with custom port
-192.168.1.2:8729
+*   **IP with custom port**
+    ```
+    192.168.1.2:8729
+    ```
 
-# IP[:port] with custom credentials (username|password)
-192.168.1.3|customuser|custompass
-192.168.1.4:8729|customuser2|custompass2
+*   **IP[:port] with custom credentials** (username|password)
+    ```
+    192.168.1.3|customuser|custompass
+    192.168.1.4:8729|customuser2|custompass2
+    ```
 
-# Lines starting with # are comments. Empty lines are ignored.
+*   **Lines starting with # are comments. Empty lines are ignored.**
 
 
 ## Screenshot
