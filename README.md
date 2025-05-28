@@ -1,35 +1,39 @@
 # MikroTik Mass Updater
+This is a Python script to send commands to multiple Mikrotik devices via the API. It provides concurrent operations, detailed logging (with optional console colors), a job summary, and configurable settings.
 
-This is a Python script to send commands to multiple Mikrotik devices via the API. It provides colored output (optional) and detailed logging.
-
-This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland, and further improved by other contributors.
+This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
 
 **Key Features:**
 
-*   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API, which is generally more efficient and provides more functionality than SSH.
-*   **Concurrent operation:** Uses threads to connect to multiple devices simultaneously, significantly reducing the execution time. The number of threads can be adjusted using the `--threads` option to optimize performance based on your system's capabilities.
-*   **Output grouped by host:** Results are clearly grouped by host, both on-screen and in the log file.
-*   **Colored output (optional):** The on-screen output can be colored for better readability, highlighting hosts, commands, output, and errors. Colors can be turned on or off with the `--no-colors` command-line option.
-*   **Detailed logging:** Logs all commands sent, output received, and errors encountered to a log file (`backuplog.txt`).
-*   **Error handling:** The script handles connection errors, API errors, and other exceptions gracefully.
-*   **Idempotent Update Logic:** Attempts to install updates regardless of the current status. Includes cases where status may be unclear or device already updated.
-*   **Dry-run mode:** Allows to test the script and see the log output without actually installing updates using the `--dry-run` option.
-*   **Configurable timeout:** Allows to change default timeout using the `--timeout` option.
-*   **Custom Commands:** You can add custom commands to be executed on the Mikrotik devices directly within the `custom_commands` array in the script for tailored operations.
-
-By default, the script checks for updates and installs them if the router does not refuse the operation.
-The script will execute also the custom commands listed in `custom_commands` array.
+*   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API.
+*   **Concurrent Operation:** Employs threading to connect to multiple devices simultaneously. The number of threads is configurable (`--threads`).
+*   **Structured Logging:** Uses Python's standard `logging` module.
+    *   Detailed logs are saved to a file (default: `backuplog.txt`, configurable via `--log-file`). File logs include timestamps, log levels, and thread names.
+    *   Console output is formatted for readability, with optional color-coding for different log levels (`--no-colors` to disable).
+    *   Debug mode for more verbose logging (`--debug`).
+*   **Job Summary:** At the end of execution, a summary is provided detailing total hosts processed, successful operations, and failed operations (including a list of specific failed IPs). "Unknown" host failures are counted in totals but not itemized in the failed IP list.
+*   **Flexible Host Configuration:**
+    *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
+    *   Supports `IP`, `IP:PORT`, and `IP[:PORT]|USERNAME|PASSWORD` formats in the list file.
+    *   Default API port is 8728, configurable via `--port`.
+*   **Error Handling:** Graceful handling of connection errors, API errors, and other exceptions, with retries for command execution. Malformed lines in the IP list are skipped with a warning.
+*   **Update Logic:** Checks for and installs updates by default.
+    *   `--dry-run` mode to simulate without actual installation.
+    *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
+*   **Custom Commands:** Supports execution of user-defined custom commands on all devices.
+*   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly, attempting to stop operations and finalize.
+*   **Start Line:** Option to start processing the IP list from a specific line number (`--start-line`).
 
 ## Requirements
 
 *   **Python 3.6 or later**
-*   **`librouteros` library:**
+*   **`librouteros` library:** (Tested with v3.4.1, other versions might work)
 
     ```bash
     pip install librouteros
     ```
 
-    or
+    or on Debian/Ubuntu:
 
     ```bash
     sudo apt install python3-librouteros
@@ -37,110 +41,95 @@ The script will execute also the custom commands listed in `custom_commands` arr
 
 ## Notes
 
-*   API access must be enabled on your Mikrotik devices (usually on port 8728).
-*   The log file (`backuplog.txt`) is overwritten each time you run the script.
-*   By default the script uses port 8728, otherwise you can specify the desired port `IP:port`.
-*   Default timeout is 15 seconds, change it with `--timeout` option.
+*   API access (port 8728 by default, or custom with `--port` or `IP:PORT` syntax) must be enabled on your Mikrotik devices.
+*   The log file is overwritten each time the script is run.
+*   Default connection timeout is 15 seconds (change with `--timeout`).
 
 ## Options
 
-*   `-u` or `--username`: Specifies the API username. **(Required)**
-*   `-p` or `--password`: Specifies the API password. **(Required)**
-*   `-t` or `--threads`: Specifies the number of threads to use. Default is `10`.
-*   `--timeout`: Specifies the connection timeout in seconds. Default is `15`.
-*   `--no-colors`: Disables colored output on the screen.
-*   `--dry-run`: Enables dry-run mode. Skips the actual installation of updates.
-*   `--start-line`: Start from this line number in list.txt (1-based). Default is `1`.
+*   `-u USERNAME`, `--username USERNAME`: Specifies the API username. **(Required)**
+*   `-p PASSWORD`, `--password PASSWORD`: Specifies the API password. **(Required)**
+*   `-t THREADS`, `--threads THREADS`: Number of concurrent threads to use. Default: `5`.
+*   `--timeout TIMEOUT`: Connection timeout in seconds for API communication. Default: `5`.
+*   `--ip-list FILE_PATH`: Path to the IP list file. Default: `list.txt`.
+*   `--log-file FILE_PATH`: Path to the log file. Default: `backuplog.txt`.
+*   `--port API_PORT`: Default API port if not specified in the IP list file. Default: `8728`.
+*   `--update-check-attempts ATTEMPTS`: Number of attempts to check update status. Default: `15`.
+*   `--update-check-delay DELAY`: Delay (seconds) between update status checks. Default: `2.0`.
+*   `--no-colors`: Disables colored output on the console.
+*   `--dry-run`: Enables dry-run mode (simulates updates but doesn't install).
+*   `--start-line LINE_NUM`: Start from this line number in the IP list file (1-based). Default: `1`.
+*   `--debug`: Enables debug logging level for more verbose output.
 
 ## Usage
 
-1. Download `mkmassupdate.py`
-2. Install the `librouteros` library if it's not already installed
-3. Edit or create the `list.txt` file with the IP addresses of your Mikrotik devices (one per line, in the format `IP` or `IP:port` if you are not using the default port 8728).
-4. Edit the `custom_commands` array in `mkmassupdate.py` to add any custom commands you want to execute.
-4. Run the script, providing your username and password as arguments:
+1.  Download or clone `mkmassupdate.py`.
+2.  Install the `librouteros` library.
+3.  Prepare your IP list file (default `list.txt`).
+4.  (Optional) Edit the `custom_commands` list within `mkmassupdate.py` for custom operations.
+5.  Run the script with your credentials and desired options:
 
-    *   **With colors (default), specific timeout and dry-run mode:**
+    ```bash
+    python3 mkmassupdate.py -u your_username -p your_password [OPTIONS]
+    ```
 
+    **Examples:**
+
+    *   **Basic run:**
         ```bash
-        python mkmassupdate.py -u your_username -p your_password --timeout 30 --dry-run
+        python3 mkmassupdate.py -u admin -p pass123
         ```
 
-    *   **Without colors, with 20 threads:**
-
+    *   **Using a custom IP list, log file, and 20 threads:**
         ```bash
-        python mkmassupdate.py --no-colors -u your_username -p your_password -t 20
+        python3 mkmassupdate.py -u admin -p pass123 --ip-list /path/to/my_routers.txt --log-file /tmp/mikrotik_update.log -t 20
         ```
 
-    Replace `your_username` and `your_password` with your actual credentials.
-
-## Usage Examples
-
-```bash
-# Start from line 100 in list.txt
-python mkmassupdate.py -u admin -p password --start-line 100
-
-# Resume from line 50 with dry-run enabled
-python mkmassupdate.py -u admin -p password --start-line 50 --dry-run
-```
+    *   **Dry run with increased timeout and debug logging:**
+        ```bash
+        python3 mkmassupdate.py -u admin -p pass123 --dry-run --timeout 30 --debug
+        ```
 
 ## Custom Commands Format
 
-The `custom_commands` array in the script supports two types of commands:
+The `custom_commands` list in the script supports two formats:
 
-1. **Simple commands** - Just the command string:
-   ```python
-   '/interface/print'
-   ```
+1.  **Simple commands** (string):
+    ```python
+    '/interface/print'
+    ```
+2.  **Commands with parameters** (tuple: command string, parameters dictionary):
+    ```python
+    ('/user/add', {'name': 'newuser', 'password': 'userpass', 'group': 'read'})
+    ```
 
-2. **Commands with parameters** - A tuple containing the command and a dictionary of parameters:
-   ```python
-   ('/user/add', {
-       'name': 'newuser',
-       'password': 'userpass',
-       'group': 'read'
-   })
-   ```
-
-Example of custom_commands array:
+**Example `custom_commands` list:**
 ```python
 custom_commands = [
-    # Simple command
     '/system/clock/print',
-    
-    # Command with parameters
-    ('/user/add', {
-        'name': 'monitor',
-        'password': 'secret123',
-        'group': 'read'
-    }),
-    
-    # Another simple command
-    '/user/print'
+    ('/interface/set', {
+        'numbers': 'ether1',  # Assuming 'numbers' is how you identify the interface
+        'comment': 'Main WAN Link'
+    })
 ]
-```
 
-Note: Parameters must match the exact names expected by the MikroTik API for that command.
+Note: Parameter names must match MikroTik API specifications.
+IP List File Format (list.txt or custom)
 
-## Example `list.txt` file
+One entry per line. Supported formats:
 
-The file supports three formats:
-```
-# 1. IP only (uses default port 8728 and default credentials)
+# IP only (uses default API port and script credentials)
 192.168.1.1
 
-# 2. IP with custom port
+# IP with custom port
 192.168.1.2:8729
 
-# 3. IP[:port] with custom credentials (separated by |)
-192.168.1.3|admin|password123
-192.168.1.4:8729|admin|password123
+# IP[:port] with custom credentials (username|password)
+192.168.1.3|customuser|custompass
+192.168.1.4:8729|customuser2|custompass2
 
-# Lines starting with # are comments
-# Empty lines are ignored
-```
+# Lines starting with # are comments. Empty lines are ignored.
 
-Note: Custom credentials are optional. If not specified, the credentials provided as command line parameters will be used.
 
 ## Screenshot
 ![ScreenShot](./screenshot.png)

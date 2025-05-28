@@ -1,4 +1,5 @@
 LICENSE
+.gitignore
 
 # Log files
 backuplog.txt
@@ -20,3 +21,8 @@ build/
 # Virtual environment
 venv/
 env/
+.env
+
+# History
+.lh/
+.history/
