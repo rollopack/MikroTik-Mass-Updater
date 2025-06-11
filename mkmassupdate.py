@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.6
+#  MikroTik Mass Updater v4.7.5
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -55,6 +55,7 @@ parser.add_argument("--no-colors", action="store_true", help="Disable colored ou
 parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
 parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
 parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
+parser.add_argument("--cloud-password", help="Password for cloud backup")
 args = parser.parse_args()
 
 # --- Logger setup definitions ---
@@ -269,7 +270,7 @@ def _execute_router_command(api, command_item, entry_lines):
             cmd = command_item
             response = execute_with_retry(api, cmd)
         return response
-    except librouteros.exceptions.TimeoutError as e:
+    except (TimeoutError, socket.error) as e: # Catch generic TimeoutError and socket.error
         entry_lines.append(f"  Error executing command {command_item}: TimeoutError after retries\n")
     except Exception as e:
         entry_lines.append(f"  Error executing command {command_item}: {type(e).__name__}: {e}\n")
@@ -372,7 +373,45 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
     
     return update_success
 
-def worker(q, default_username, default_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay): # Modified signature
+# Implemented cloud backup function
+def _perform_cloud_backup(api, cloud_password, entry_lines):
+    #entry_lines.append("  Starting cloud backup process...\n")
+
+    # 1. Remove existing backup file (assuming '0' is the first/default backup)
+    remove_params = {'number': '0'} 
+    #entry_lines.append(f"  Executing: /system backup cloud remove-file number=0\n")
+    response_remove = _execute_router_command(api, ('/system/backup/cloud/remove-file', remove_params), entry_lines)
+
+    if response_remove is None:
+        # Si è verificato un errore durante la rimozione. Controlla se è l'errore "no such item".
+        if entry_lines and "no such item" in entry_lines[-1] and "TrapError" in entry_lines[-1]:
+            # È l'errore "no such item" atteso. Sovrascrivi il messaggio di errore.
+            entry_lines.pop() # Rimuovi l'ultima riga (il messaggio di errore da _execute_router_command)
+            entry_lines.append("  Cloud backup: No previous backup found.\n")
+        else:
+            # È un errore diverso, quindi la rimozione è fallita davvero.
+            entry_lines.append("  Cloud backup: Failed to remove existing backup file.\n")
+            return False # Fallimento complessivo per _perform_cloud_backup
+    else:
+        entry_lines.append("  Cloud backup: Successfully removed existing backup file.\n")
+
+    # 2. Create and upload new backup
+    upload_params = {
+        'action': 'create-and-upload',
+        'password': cloud_password
+    }
+    #entry_lines.append(f"  Executing: /system backup cloud upload-file action=create-and-upload password=***\n")
+    response_upload = _execute_router_command(api, ('/system/backup/cloud/upload-file', upload_params), entry_lines)
+
+    if response_upload is None:
+        entry_lines.append("  Cloud backup: Failed to create and upload new backup.\n")
+        return False
+    
+    entry_lines.append("  Cloud backup: Successfully created and uploaded new backup.\n")
+    #entry_lines.append("  Cloud backup process completed successfully.\n")
+    return True
+
+def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay): # Modified signature
     # results = [] # This was removed in a previous step.
     api = None # Initialize api to None for each worker function call scope.
     
@@ -442,6 +481,12 @@ def worker(q, default_username, default_password, stop_event, timeout, dry_run, 
                     api, entry_lines, dry_run, update_check_attempts, update_check_delay
                 )
                 success = update_processed_successfully # Overall success depends on update process outcome.
+
+                # Perform cloud backup if password is provided
+                if success and cloud_password: # Check success to ensure previous steps were okay
+                    backup_success = _perform_cloud_backup(api, cloud_password, entry_lines)
+                    if not backup_success:
+                        success = False # Mark overall success as False if backup failed
 
         except librouteros.exceptions.TrapError as e:
             # Handle specific API errors like authentication failure.
@@ -535,8 +580,8 @@ try:
         t = threading.Thread(
             target=worker,
             args=(
-                q, args.username, args.password, stop_event, args.timeout, args.dry_run,
-                aggregated_results, args.update_check_attempts, args.update_check_delay # Pass new args
+                q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
+                aggregated_results, args.update_check_attempts, args.update_check_delay
             ),
             name=f"Worker-{_+1}"
         )

@@ -60,6 +60,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--dry-run`: Enables dry-run mode (simulates updates but doesn't install).
 *   `--start-line LINE_NUM`: Start from this line number in the IP list file (1-based). Default: `1`.
 *   `--debug`: Enables debug logging level for more verbose output.
+*   `--cloud-password PASSWORD`: Password for cloud backup. **(Required for performing cloud backup)**
 
 ## Usage
 
@@ -88,6 +89,11 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   **Dry run with increased timeout and debug logging:**
         ```bash
         python3 mkmassupdate.py -u admin -p pass123 --dry-run --timeout 30 --debug
+        ```
+
+    *   **Perform cloud backup with a specified password:**
+        ```bash
+        python3 mkmassupdate.py -u admin -p pass123 --cloud-password your_cloud_backup_password
         ```
 
 ## Custom Commands Format
