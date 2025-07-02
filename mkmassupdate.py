@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.7.5
+#  MikroTik Mass Updater v4.7.8
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -328,7 +328,7 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
         if status_response:
             status = status_response[0].get('status', '').lower()
             if 'checking' not in status:
-                entry_lines.append(f"  Check-for-updates completed.\n  Status: {status}\n")
+                entry_lines.append(f"  Status: {status}\n")
                 check_complete = True
                 break
         else: # Error during status check
@@ -375,32 +375,45 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
 
 # Implemented cloud backup function
 def _perform_cloud_backup(api, cloud_password, entry_lines):
-    #entry_lines.append("  Starting cloud backup process...\n")
+    #entry_lines.append("  Cloud backup: Checking for existing backups...\n")
 
-    # 1. Remove existing backup file (assuming '0' is the first/default backup)
-    remove_params = {'number': '0'} 
-    #entry_lines.append(f"  Executing: /system backup cloud remove-file number=0\n")
-    response_remove = _execute_router_command(api, ('/system/backup/cloud/remove-file', remove_params), entry_lines)
+    # 1. Get a list of all existing cloud backups.
+    existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
 
-    if response_remove is None:
-        # Si è verificato un errore durante la rimozione. Controlla se è l'errore "no such item".
-        if entry_lines and "no such item" in entry_lines[-1] and "TrapError" in entry_lines[-1]:
-            # È l'errore "no such item" atteso. Sovrascrivi il messaggio di errore.
-            entry_lines.pop() # Rimuovi l'ultima riga (il messaggio di errore da _execute_router_command)
-            entry_lines.append("  Cloud backup: No previous backup found.\n")
-        else:
-            # È un errore diverso, quindi la rimozione è fallita davvero.
-            entry_lines.append("  Cloud backup: Failed to remove existing backup file.\n")
-            return False # Fallimento complessivo per _perform_cloud_backup
-    else:
-        entry_lines.append("  Cloud backup: Successfully removed existing backup file.\n")
+    if existing_backups is None:
+        # Error executing the print command is already logged by _execute_router_command.
+        entry_lines.append("  Cloud backup: Failed to retrieve list of existing backups. Aborting.\n")
+        return False
 
-    # 2. Create and upload new backup
+    # 2. If backups exist, collect their IDs and remove them all in a single command.
+    if existing_backups:
+        backup_ids = [backup['.id'] for backup in existing_backups if '.id' in backup]
+        
+        if backup_ids:
+            #entry_lines.append(f"  Cloud backup: Found {len(backup_ids)} existing backup(s). Removing...\n")
+            all_removed_successfully = True
+            for backup_id in backup_ids:
+                # Use singular 'number' and iterate to remove each backup individually for compatibility.
+                remove_params = {'number': backup_id}
+                response_remove = _execute_router_command(api, ('/system/backup/cloud/remove-file', remove_params), entry_lines)
+                if response_remove is None:
+                    # Error is logged by _execute_router_command, just mark failure and continue.
+                    all_removed_successfully = False
+
+            if not all_removed_successfully:
+                #entry_lines.append("  Cloud backup: Failed to remove one or more existing backups.\n")
+                return False
+            #else:
+                #entry_lines.append("  Cloud backup: Successfully removed all existing backups.\n")
+    #else:
+        #entry_lines.append("  Cloud backup: No previous backups found.\n")
+
+    # 3. Create and upload new backup
+    #entry_lines.append("  Cloud backup: Creating and uploading new backup...\n")
     upload_params = {
         'action': 'create-and-upload',
         'password': cloud_password
     }
-    #entry_lines.append(f"  Executing: /system backup cloud upload-file action=create-and-upload password=***\n")
     response_upload = _execute_router_command(api, ('/system/backup/cloud/upload-file', upload_params), entry_lines)
 
     if response_upload is None:
@@ -408,11 +421,10 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
         return False
     
     entry_lines.append("  Cloud backup: Successfully created and uploaded new backup.\n")
-    #entry_lines.append("  Cloud backup process completed successfully.\n")
     return True
 
 def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay): # Modified signature
-    # results = [] # This was removed in a previous step.
+    # results = # This was removed in a previous step.
     api = None # Initialize api to None for each worker function call scope.
     
     while not stop_event.is_set():
@@ -476,18 +488,21 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
             if not command_execution_successful:
                 success = False
             else:
-                # If all informational/custom commands were successful, proceed to check/process updates.
-                update_processed_successfully = _check_and_process_updates(
-                    api, entry_lines, dry_run, update_check_attempts, update_check_delay
-                )
-                success = update_processed_successfully # Overall success depends on update process outcome.
+                # All informational/custom commands were successful.
+                # Start with success=True and set to False if any subsequent step fails.
+                success = True
 
                 # Perform cloud backup if password is provided
-                if success and cloud_password: # Check success to ensure previous steps were okay
+                if cloud_password:
                     backup_success = _perform_cloud_backup(api, cloud_password, entry_lines)
                     if not backup_success:
                         success = False # Mark overall success as False if backup failed
 
+                # If backup was successful (or not performed), proceed to check/process updates.
+                #if success:
+                    success = _check_and_process_updates(
+                        api, entry_lines, dry_run, update_check_attempts, update_check_delay
+                    )
         except librouteros.exceptions.TrapError as e:
             # Handle specific API errors like authentication failure.
             # Using f-string for error message.
