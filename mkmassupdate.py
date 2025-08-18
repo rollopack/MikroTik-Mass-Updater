@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.7.8
+#  MikroTik Mass Updater v4.8
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -25,38 +25,6 @@ custom_commands = [];
 #     '/user/print',
 #     '/system/clock/print'
 # ]
-
-parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
-parser.add_argument("-u", "--username", required=True, help="API username")
-parser.add_argument("-p", "--password", required=True, help="API password")
-parser.add_argument("-t", "--threads", type=int, default=5, help="Number of threads to use")
-parser.add_argument("--timeout", type=int, default=5, help="Connection timeout in seconds")
-parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
-parser.add_argument("--log-file", default='backuplog.txt', help="Path to the log file.")
-parser.add_argument(
-    "--port",
-    type=int,
-    default=8728,
-    help="Default API port to use if not specified in the IP list file (e.g., IP:PORT)."
-)
-parser.add_argument(
-    "--update-check-attempts",
-    type=int,
-    default=15,
-    help="Number of attempts to check update status after issuing check-for-updates."
-)
-parser.add_argument(
-    "--update-check-delay",
-    type=float, 
-    default=2.0,
-    help="Delay (in seconds) between update status checks."
-)
-parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
-parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
-parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
-parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
-parser.add_argument("--cloud-password", help="Password for cloud backup")
-args = parser.parse_args()
 
 # --- Logger setup definitions ---
 # Define ANSI color codes (used by ColoredFormatter)
@@ -167,7 +135,7 @@ def setup_logger(log_path, use_colors_arg, debug_level=False):
 # --- End of logger setup definitions ---
 
 # Initialize logger (now after definitions and args parsing)
-logger = setup_logger(args.log_file, not args.no_colors, args.debug)
+logger = logging.getLogger("MKMikroTikUpdater")
 
 # This section is now clean after previous refactoring.
 
@@ -421,6 +389,23 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
         return False
     
     entry_lines.append("  Cloud backup: Successfully created and uploaded new backup.\n")
+
+    # After successful backup, retrieve the secret-download-key
+    time.sleep(2) # Give the router a moment to process
+    #entry_lines.append("  Cloud backup: Retrieving secret download key...\n")
+    latest_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
+
+    if latest_backups:
+        # Assuming the first backup in the list is the one just created
+        latest_backup = latest_backups[0]
+        secret_key = latest_backup.get('secret-download-key')
+        if secret_key:
+            entry_lines.append(f"  Cloud backup: Secret Download Key: {secret_key}\n")
+        else:
+            entry_lines.append("  Cloud backup: Could not find secret-download-key for the latest backup.\n")
+    else:
+        entry_lines.append("  Cloud backup: Failed to retrieve backup details to get secret key.\n")
+
     return True
 
 def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay): # Modified signature
@@ -586,125 +571,161 @@ stop_event = threading.Event() # Event to signal worker threads to stop.
 aggregated_results = [] # Shared list to store results from all worker threads.
 
 # Main script execution block
-try:
-    logger.info("-- Starting job --")
+def main():
+    parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
+    parser.add_argument("-u", "--username", required=True, help="API username")
+    parser.add_argument("-p", "--password", required=True, help="API password")
+    parser.add_argument("-t", "--threads", type=int, default=5, help="Number of threads to use")
+    parser.add_argument("--timeout", type=int, default=5, help="Connection timeout in seconds")
+    parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
+    parser.add_argument("--log-file", default='backuplog.txt', help="Path to the log file.")
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8728,
+        help="Default API port to use if not specified in the IP list file (e.g., IP:PORT)."
+    )
+    parser.add_argument(
+        "--update-check-attempts",
+        type=int,
+        default=15,
+        help="Number of attempts to check update status after issuing check-for-updates."
+    )
+    parser.add_argument(
+        "--update-check-delay",
+        type=float,
+        default=2.0,
+        help="Delay (in seconds) between update status checks."
+    )
+    parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
+    parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
+    parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
+    parser.add_argument("--cloud-password", help="Password for cloud backup")
+    args = parser.parse_args()
 
-    # Start worker threads.
-    for _ in range(args.threads):
-        # Removed log from args
-        t = threading.Thread(
-            target=worker,
-            args=(
-                q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
-                aggregated_results, args.update_check_attempts, args.update_check_delay
-            ),
-            name=f"Worker-{_+1}"
-        )
-        threads.append(t)
-        t.start()
+    setup_logger(args.log_file, not args.no_colors, args.debug)
 
-    # Populate the queue with host information from the IP list file.
     try:
-        with open(args.ip_list, 'r') as f: 
-            for i, line_content in enumerate(f, 1): # Renamed 'line' to 'line_content'
-                if stop_event.is_set(): 
-                    logger.warning("Interruption detected, stopping queue population.")
+        logger.info("-- Starting job --")
+
+        # Start worker threads.
+        for _ in range(args.threads):
+            # Removed log from args
+            t = threading.Thread(
+                target=worker,
+                args=(
+                    q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
+                    aggregated_results, args.update_check_attempts, args.update_check_delay
+                ),
+                name=f"Worker-{_+1}"
+            )
+            threads.append(t)
+            t.start()
+
+        # Populate the queue with host information from the IP list file.
+        try:
+            with open(args.ip_list, 'r') as f:
+                for i, line_content in enumerate(f, 1): # Renamed 'line' to 'line_content'
+                    if stop_event.is_set():
+                        logger.warning("Interruption detected, stopping queue population.")
+                        break
+                    stripped_line_for_check = line_content.strip()
+                    if stripped_line_for_check and not stripped_line_for_check.startswith('#'):
+                        if i >= args.start_line:
+                            host_info = parse_host_line(line_content, args.port)
+                            if host_info:
+                                q.put(host_info)
+        except FileNotFoundError:
+            logger.error(f"IP list file not found: {args.ip_list}")
+            stop_event.set() # Signal threads to stop if IP list is not found.
+
+        # Wait for the queue to be processed or for an interruption.
+        while not q.empty() and not stop_event.is_set():
+            time.sleep(0.1)
+
+        # If not interrupted, wait for all tasks in the queue to be completed.
+        if not stop_event.is_set() and not q.empty():
+            logger.info("Waiting for all tasks in queue to complete normally...")
+            q.join()
+        elif not stop_event.is_set() and q.empty():
+            # This means all items were processed and q.join() is not strictly needed
+            # as workers would have called task_done for each item they processed from the queue.
+            # However, calling q.join() on an empty queue that previously had items
+            # and for which all task_done() calls were made is non-blocking and safe.
+            # It ensures all tasks are accounted for if the queue became empty very quickly.
+            logger.debug("Queue is empty, all tasks presumed processed.")
+            q.join()
+
+
+    except KeyboardInterrupt:
+        logger.warning("\nInterrupted by user. Shutting down gracefully...")
+        stop_event.set() # Signal worker threads to stop.
+
+    finally:
+        # This block ensures cleanup and reporting happen reliably.
+        #logger.info("Waiting for worker threads to finish...")
+
+        # If interrupted, clear any remaining items from the queue.
+        if stop_event.is_set():
+            logger.warning("Clearing queue due to interruption...")
+            while not q.empty():
+                try:
+                    q.get_nowait() # Remove item without blocking.
+                    q.task_done()  # Mark as done to allow q.join() later if it were used.
+                except queue.Empty:
+                    logger.debug("Queue is now empty during interrupt cleanup.")
                     break
-                stripped_line_for_check = line_content.strip() 
-                if stripped_line_for_check and not stripped_line_for_check.startswith('#'):
-                    if i >= args.start_line:
-                        host_info = parse_host_line(line_content, args.port) 
-                        if host_info:
-                            q.put(host_info)
-    except FileNotFoundError:
-        logger.error(f"IP list file not found: {args.ip_list}")
-        stop_event.set() # Signal threads to stop if IP list is not found.
-    
-    # Wait for the queue to be processed or for an interruption.
-    while not q.empty() and not stop_event.is_set():
-        time.sleep(0.1) 
+                except ValueError:
+                    logger.debug("ValueError during queue cleanup, q.task_done() called too many times.")
+                    break # Should not happen if task_done only called after get_nowait.
 
-    # If not interrupted, wait for all tasks in the queue to be completed.
-    if not stop_event.is_set() and not q.empty():
-        logger.info("Waiting for all tasks in queue to complete normally...")
-        q.join() 
-    elif not stop_event.is_set() and q.empty():
-        # This means all items were processed and q.join() is not strictly needed
-        # as workers would have called task_done for each item they processed from the queue.
-        # However, calling q.join() on an empty queue that previously had items
-        # and for which all task_done() calls were made is non-blocking and safe.
-        # It ensures all tasks are accounted for if the queue became empty very quickly.
-        logger.debug("Queue is empty, all tasks presumed processed.")
-        q.join()
+        # Wait for all worker threads to complete their current tasks and exit.
+        for t in threads:
+            t.join()
 
+        # Process and print the job summary.
+        total_hosts = len(aggregated_results)
+        successful_ops = sum(1 for res in aggregated_results if res["success"])
+        failed_ops = total_hosts - successful_ops
+        failed_ips = [res["IP"] for res in aggregated_results if not res["success"]]
 
-except KeyboardInterrupt:
-    logger.warning("\nInterrupted by user. Shutting down gracefully...")
-    stop_event.set() # Signal worker threads to stop.
+        summary_lines = []
+        summary_lines.append("\n\n-- Job Summary --\n")
+        summary_lines.append(f"Total hosts processed: {total_hosts}\n")
+        summary_lines.append(f"Successful operations: {successful_ops}\n")
+        summary_lines.append(f"Failed operations: {failed_ops}\n")
 
-finally:
-    # This block ensures cleanup and reporting happen reliably.
-    #logger.info("Waiting for worker threads to finish...")
-    
-    # If interrupted, clear any remaining items from the queue.
-    if stop_event.is_set():
-        logger.warning("Clearing queue due to interruption...")
-        while not q.empty():
-            try:
-                q.get_nowait() # Remove item without blocking.
-                q.task_done()  # Mark as done to allow q.join() later if it were used.
-            except queue.Empty:
-                logger.debug("Queue is now empty during interrupt cleanup.")
-                break
-            except ValueError: 
-                logger.debug("ValueError during queue cleanup, q.task_done() called too many times.")
-                break # Should not happen if task_done only called after get_nowait.
+        if failed_ops > 0:
+            summary_lines.append("Failed IPs:\n") # Keep this header
 
-    # Wait for all worker threads to complete their current tasks and exit.
-    for t in threads:
-        t.join()
+            unknown_host_marker = "Unknown (worker exited early)"
+            # We still need to filter them out from being individually listed if they were part of failed_ips
+            specific_failed_ips = [ip for ip in failed_ips if ip != unknown_host_marker]
 
-    # Process and print the job summary.
-    total_hosts = len(aggregated_results)
-    successful_ops = sum(1 for res in aggregated_results if res["success"])
-    failed_ops = total_hosts - successful_ops
-    failed_ips = [res["IP"] for res in aggregated_results if not res["success"]]
+            # The line counting unknown_host_count and appending it is simply removed.
+            # No 'if unknown_host_count > 0:' block that appends to summary_message_lines.
 
-    summary_lines = []
-    summary_lines.append("\n\n-- Job Summary --\n")
-    summary_lines.append(f"Total hosts processed: {total_hosts}\n")
-    summary_lines.append(f"Successful operations: {successful_ops}\n")
-    summary_lines.append(f"Failed operations: {failed_ops}\n")
+            for specific_ip in specific_failed_ips:
+                summary_lines.append(f"  - {specific_ip}\n")
 
-    if failed_ops > 0:
-        summary_lines.append("Failed IPs:\n") # Keep this header
-        
-        unknown_host_marker = "Unknown (worker exited early)"
-        # We still need to filter them out from being individually listed if they were part of failed_ips
-        specific_failed_ips = [ip for ip in failed_ips if ip != unknown_host_marker]
-        
-        # The line counting unknown_host_count and appending it is simply removed.
-        # No 'if unknown_host_count > 0:' block that appends to summary_message_lines.
-        
-        for specific_ip in specific_failed_ips:
-            summary_lines.append(f"  - {specific_ip}\n")
-    
-    summary_output = "".join(summary_lines) # This already contains the desired structure with newlines.
-    
-    # Consolidate into a single logger call for the entire summary.
-    # The summary_output string already has a leading "\n\n-- Job Summary --\n"
-    # and subsequent lines are newline-terminated.
-    # We just need to ensure it's logged once.
-    # The ColoredFormatter for INFO level on console is just "%(message)s", 
-    # so it will print the multi-line string as is.
-    # The file logger will also log it as a multi-line string.
-    logger.info(summary_output.strip()) # Use strip() to remove any trailing newline from the last item, if any.
-                                      # The initial "\n\n" will provide spacing.
+        summary_output = "".join(summary_lines) # This already contains the desired structure with newlines.
 
-    logger.info("-- Job finished --") # For file and console.
+        # Consolidate into a single logger call for the entire summary.
+        # The summary_output string already has a leading "\n\n-- Job Summary --\n"
+        # and subsequent lines are newline-terminated.
+        # We just need to ensure it's logged once.
+        # The ColoredFormatter for INFO level on console is just "%(message)s",
+        # so it will print the multi-line string as is.
+        # The file logger will also log it as a multi-line string.
+        logger.info(summary_output.strip()) # Use strip() to remove any trailing newline from the last item, if any.
+                                          # The initial "\n\n" will provide spacing.
 
-    # log.flush() # Removed
-    # log.close() # Removed: File closing handled by logging.shutdown()
-    logging.shutdown() # Add logging.shutdown()
+        logger.info("-- Job finished --") # For file and console.
 
-# color_print("\n-- Job finished --\n", Colors.UNDERLINE) # Replaced by logger.info
+        # log.flush() # Removed
+        # log.close() # Removed: File closing handled by logging.shutdown()
+        logging.shutdown() # Add logging.shutdown()
+
+if __name__ == '__main__':
+    main()
