@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.9
+#  MikroTik Mass Updater v4.9.1
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -543,13 +543,14 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
                 # Start with success=True and set to False if any subsequent step fails.
                 success = True
 
-                # Perform cloud backup if password is provided
+                # Perform cloud backup if password is provided. This is now a best-effort step.
                 if cloud_password:
                     backup_success = _perform_cloud_backup(api, cloud_password, entry_lines)
                     if not backup_success:
-                        success = False # Mark overall success as False if backup failed
+                        entry_lines.append("  Warning: Cloud backup failed. Proceeding with updates regardless.\n")
+                        # Do not set success to False. Allow the process to continue.
 
-                # If backup was successful (or not performed), proceed to check/process updates.
+                # If the main process has been successful so far, proceed to check/process updates.
                 if success:
                     success = _check_and_process_updates(
                         api, entry_lines, dry_run, update_check_attempts, update_check_delay
