@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.8
+#  MikroTik Mass Updater v4.9
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -408,7 +408,73 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
 
     return True
 
-def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay): # Modified signature
+def _perform_firmware_upgrade(api, entry_lines):
+    """
+    Checks for and performs a firmware upgrade if one is available.
+    A reboot is issued upon successful upgrade, which will cause a disconnect.
+    """
+    #entry_lines.append("  Firmware upgrade: Checking status...\n")
+    
+    # 1. Get routerboard info to check versions
+    routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
+    if not routerboard_info:
+        entry_lines.append("  Firmware upgrade: Failed to retrieve routerboard information. Aborting.\n")
+        return False
+
+    info = routerboard_info[0]
+    current_firmware = info.get('current-firmware')
+    upgrade_firmware = info.get('upgrade-firmware')
+
+    if not current_firmware or not upgrade_firmware:
+        entry_lines.append("  Firmware upgrade: Could not determine firmware versions. Aborting.\n")
+        return False
+
+    # 2. Compare versions and decide if upgrade is needed
+    if current_firmware == upgrade_firmware:
+        entry_lines.append(f"  Firmware is up to date (current: {current_firmware}). No upgrade needed.\n")
+        return True # Success, no action needed.
+    else:
+        entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
+        
+        # 3. Perform the upgrade
+        entry_lines.append("  Firmware upgrade: Attempting to upgrade...\n")
+        try:
+            # The API command for upgrade should not be interactive.
+            upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
+            if upgrade_response is None:
+                 # Error is already logged by _execute_router_command
+                 entry_lines.append("  Firmware upgrade: Failed.\n")
+                 return False
+
+            # If the command was sent, a reboot is required.
+            entry_lines.append("  Firmware upgrade: Upgrade command sent. Rebooting router to apply...\n")
+            
+            # 4. Reboot the router. This will cause an exception.
+            try:
+                # We don't use _execute_router_command here because we expect an exception
+                # and don't want it to be logged as a failure in the same way.
+                _execute_router_command(api, '/system/reboot', entry_lines)
+                time.sleep(1) # Give router time to process reboot before connection is closed.
+                # We might not reach here if the reboot is instantaneous.
+            except (socket.error, TimeoutError, ConnectionResetError) as e:
+                # This is the expected outcome of a successful reboot command.
+                entry_lines.append(f"  Router is rebooting as expected. Disconnected.\n")
+                # We can consider this a success because the command was sent.
+                return True
+            except Exception as e:
+                # Any other exception is unexpected.
+                entry_lines.append(f"  Firmware upgrade: An unexpected error occurred during reboot: {type(e).__name__}: {e}\n")
+                return False
+
+            # If we somehow get here without an exception, it's still a success as the command was sent.
+            entry_lines.append("  Reboot command sent. Router will reboot shortly.\n")
+            return True
+
+        except Exception as e:
+            entry_lines.append(f"  Firmware upgrade: An error occurred: {type(e).__name__}: {e}\n")
+            return False
+
+def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware): # Modified signature
     # results = # This was removed in a previous step.
     api = None # Initialize api to None for each worker function call scope.
     
@@ -484,10 +550,15 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
                         success = False # Mark overall success as False if backup failed
 
                 # If backup was successful (or not performed), proceed to check/process updates.
-                #if success:
+                if success:
                     success = _check_and_process_updates(
                         api, entry_lines, dry_run, update_check_attempts, update_check_delay
                     )
+                
+                if success and upgrade_firmware:
+                    firmware_success = _perform_firmware_upgrade(api, entry_lines)
+                    if not firmware_success:
+                        success = False
         except librouteros.exceptions.TrapError as e:
             # Handle specific API errors like authentication failure.
             # Using f-string for error message.
@@ -602,6 +673,7 @@ def main():
     parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
     parser.add_argument("--cloud-password", help="Password for cloud backup")
+    parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
     args = parser.parse_args()
 
     setup_logger(args.log_file, not args.no_colors, args.debug)
@@ -616,7 +688,7 @@ def main():
                 target=worker,
                 args=(
                     q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
-                    aggregated_results, args.update_check_attempts, args.update_check_delay
+                    aggregated_results, args.update_check_attempts, args.update_check_delay, args.upgrade_firmware
                 ),
                 name=f"Worker-{_+1}"
             )

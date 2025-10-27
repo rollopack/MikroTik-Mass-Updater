@@ -3,6 +3,7 @@ LICENSE
 
 # Log files
 backuplog.txt
+backuplog*
 
 # Device list files
 list.txt

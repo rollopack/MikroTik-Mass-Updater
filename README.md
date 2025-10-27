@@ -61,6 +61,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--start-line LINE_NUM`: Start from this line number in the IP list file (1-based). Default: `1`.
 *   `--debug`: Enables debug logging level for more verbose output.
 *   `--cloud-password PASSWORD`: Password for cloud backup. **(Required for performing cloud backup)**
+*   `--upgrade-firmware`: Perform firmware upgrade.
 
 ## Usage
 
@@ -94,6 +95,10 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   **Perform cloud backup with a specified password:**
         ```bash
         python3 mkmassupdate.py -u admin -p pass123 --cloud-password your_cloud_backup_password
+        ```
+    *   **Perform firmware upgrade:**
+        ```bash
+        python3 mkmassupdate.py -u admin -p pass123 --upgrade-firmware
         ```
 
 ## Custom Commands Format
