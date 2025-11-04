@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.9.1
+#  MikroTik Mass Updater v4.9.3
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -14,6 +14,7 @@ import argparse
 import librouteros
 import socket
 import logging # Import logging module
+import os
 
 custom_commands = [];
 #custom_commands = [
@@ -108,10 +109,19 @@ class NoEmptyMessagesFilter(logging.Filter):
         # We discard if the stripped message is empty.
         return bool(record.getMessage().strip())
 
-def setup_logger(log_path, use_colors_arg, debug_level=False):
+def setup_logger(use_colors_arg, debug_level=False):
     logger_instance = logging.getLogger("MKMikroTikUpdater")
     logger_instance.setLevel(logging.DEBUG if debug_level else logging.INFO)
     logger_instance.propagate = False # Prevent root logger from handling messages in parent loggers
+
+    # Create log directory if it doesn't exist
+    log_dir = 'log'
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    # Generate log file path
+    log_filename = f"mkmassupdate-{time.strftime('%Y-%m-%d-%H-%M-%S')}.log"
+    log_path = os.path.join(log_dir, log_filename)
 
     # File Handler (always logs with no colors, includes thread names)
     fh = logging.FileHandler(log_path, mode='w', encoding='utf-8')
@@ -272,26 +282,17 @@ def _process_resource(response, entry_lines):
 
 def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_delay):
     """
-    Handles the full update process for a router:
-    1. Initiates '/system/package/update/check-for-updates'.
-    2. Polls '/system/package/update/print' to monitor status until completion or timeout.
-    3. If updates are available and not in dry_run mode, attempts to install them.
-    Appends relevant status messages to `entry_lines`.
-    Returns True if the update process completed successfully (including no updates needed or dry run), 
-    False otherwise.
+    Handles the full update process for a router.
+    Returns True if a reboot was triggered, False otherwise.
     """
-    update_success = False  # Assume failure until a positive outcome
-
     entry_lines.append("  Checking for updates...\n")
-    # Initial check-for-updates call
     response = _execute_router_command(api, '/system/package/update/check-for-updates', entry_lines)
-    if response is None: # Error already logged by _execute_router_command
+    if response is None:
         return False
 
-    # Wait for check to complete
     check_complete = False
-    for _ in range(check_attempts):  # Use new parameter
-        time.sleep(check_delay)  # Use new parameter
+    for _ in range(check_attempts):
+        time.sleep(check_delay)
         status_response = _execute_router_command(api, '/system/package/update/print', entry_lines)
         if status_response:
             status = status_response[0].get('status', '').lower()
@@ -299,47 +300,37 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
                 entry_lines.append(f"  Status: {status}\n")
                 check_complete = True
                 break
-        else: # Error during status check
-            return False # Error already logged by _execute_router_command
+        else:
+            return False
     
     if not check_complete:
         entry_lines.append("  Timeout waiting for update check to complete.\n")
         return False
 
-    # Process update status
     status_response = _execute_router_command(api, '/system/package/update/print', entry_lines)
     if not status_response:
-        return False # Error already logged
+        return False
 
     for res in status_response:
-        # status = res.get('status', '').lower() # Status already captured above
-        # channel = res.get('channel', '') # Not used in original decision making for update
         installed_version = res.get('installed-version', '')
         latest_version = res.get('latest-version', '')
 
         if latest_version and latest_version != installed_version:
             entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
             if not dry_run:
-                time.sleep(2)  # Short pause before updating
-                # Using api.path directly as it's a specific kind of command execution
-                # _execute_router_command might need adjustment if we want to use it for path objects.
-                # For now, direct call to execute_with_retry for install, as in original.
+                time.sleep(2)
                 try:
                     update_package_path = api.path('system', 'package', 'update')
-                    execute_with_retry(update_package_path, 'install', max_retries=2) # Original had max_retries=2 here
+                    execute_with_retry(update_package_path, 'install', max_retries=2)
                     entry_lines.append(f"  Updates installed. Rebooting...\n")
-                    update_success = True
+                    return True
                 except Exception as e:
                     entry_lines.append(f"  Error installing updates: {type(e).__name__}: {e}\n")
-                    update_success = False
+                    return False
             else:
                 entry_lines.append(f"  Dry-run: Skipping installation of updates.\n")
-                update_success = True # Dry run is a "successful" outcome in terms of processing
-        else:
-            # entry_lines.append(f"  No new updates available or already up-to-date.\n") # <--- REMOVED THIS LINE
-            update_success = True # No action needed is also a success
     
-    return update_success
+    return False
 
 # Implemented cloud backup function
 def _perform_cloud_backup(api, cloud_password, entry_lines):
@@ -408,14 +399,27 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
 
     return True
 
+def _reboot_router(api, entry_lines):
+    """
+    Reboots the router and handles the expected disconnection.
+    """
+    entry_lines.append("  Rebooting router to apply changes...\n")
+    try:
+        api('/system/reboot')
+        time.sleep(1)
+    except (socket.error, TimeoutError, ConnectionResetError):
+        entry_lines.append("  Router is rebooting as expected. Disconnected.\n")
+    except Exception as e:
+        entry_lines.append(f"  An unexpected error occurred during reboot: {type(e).__name__}: {e}\n")
+
 def _perform_firmware_upgrade(api, entry_lines):
     """
-    Checks for and performs a firmware upgrade if one is available.
-    A reboot is issued upon successful upgrade, which will cause a disconnect.
+    Checks for and performs a firmware upgrade.
+    Returns:
+        - True: if an upgrade was successfully staged.
+        - False: if an error occurred.
+        - None: if no upgrade was needed (already up-to-date).
     """
-    #entry_lines.append("  Firmware upgrade: Checking status...\n")
-    
-    # 1. Get routerboard info to check versions
     routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
     if not routerboard_info:
         entry_lines.append("  Firmware upgrade: Failed to retrieve routerboard information. Aborting.\n")
@@ -429,50 +433,18 @@ def _perform_firmware_upgrade(api, entry_lines):
         entry_lines.append("  Firmware upgrade: Could not determine firmware versions. Aborting.\n")
         return False
 
-    # 2. Compare versions and decide if upgrade is needed
     if current_firmware == upgrade_firmware:
         entry_lines.append(f"  Firmware is up to date (current: {current_firmware}). No upgrade needed.\n")
-        return True # Success, no action needed.
+        return None  # No upgrade needed, not an error
     else:
         entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
-        
-        # 3. Perform the upgrade
         entry_lines.append("  Firmware upgrade: Attempting to upgrade...\n")
-        try:
-            # The API command for upgrade should not be interactive.
-            upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
-            if upgrade_response is None:
-                 # Error is already logged by _execute_router_command
-                 entry_lines.append("  Firmware upgrade: Failed.\n")
-                 return False
-
-            # If the command was sent, a reboot is required.
-            entry_lines.append("  Firmware upgrade: Upgrade command sent. Rebooting router to apply...\n")
-            
-            # 4. Reboot the router. This will cause an exception.
-            try:
-                # We don't use _execute_router_command here because we expect an exception
-                # and don't want it to be logged as a failure in the same way.
-                _execute_router_command(api, '/system/reboot', entry_lines)
-                time.sleep(1) # Give router time to process reboot before connection is closed.
-                # We might not reach here if the reboot is instantaneous.
-            except (socket.error, TimeoutError, ConnectionResetError) as e:
-                # This is the expected outcome of a successful reboot command.
-                entry_lines.append(f"  Router is rebooting as expected. Disconnected.\n")
-                # We can consider this a success because the command was sent.
-                return True
-            except Exception as e:
-                # Any other exception is unexpected.
-                entry_lines.append(f"  Firmware upgrade: An unexpected error occurred during reboot: {type(e).__name__}: {e}\n")
-                return False
-
-            # If we somehow get here without an exception, it's still a success as the command was sent.
-            entry_lines.append("  Reboot command sent. Router will reboot shortly.\n")
-            return True
-
-        except Exception as e:
-            entry_lines.append(f"  Firmware upgrade: An error occurred: {type(e).__name__}: {e}\n")
-            return False
+        upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
+        if upgrade_response is None:
+            entry_lines.append("  Firmware upgrade: Failed.\n")
+            return False  # Actual failure
+        entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
+        return True  # Upgrade was staged
 
 def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware): # Modified signature
     # results = # This was removed in a previous step.
@@ -551,15 +523,20 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
                         # Do not set success to False. Allow the process to continue.
 
                 # If the main process has been successful so far, proceed to check/process updates.
+                firmware_upgraded = False
+                if success and upgrade_firmware:
+                    firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines)
+                    if firmware_upgrade_status is False: # Explicitly check for False
+                        success = False
+                    elif firmware_upgrade_status is True:
+                        firmware_upgraded = True
+                
                 if success:
-                    success = _check_and_process_updates(
+                    reboot_triggered = _check_and_process_updates(
                         api, entry_lines, dry_run, update_check_attempts, update_check_delay
                     )
-                
-                if success and upgrade_firmware:
-                    firmware_success = _perform_firmware_upgrade(api, entry_lines)
-                    if not firmware_success:
-                        success = False
+                    if not reboot_triggered and firmware_upgraded:
+                        _reboot_router(api, entry_lines)
         except librouteros.exceptions.TrapError as e:
             # Handle specific API errors like authentication failure.
             # Using f-string for error message.
@@ -650,7 +627,6 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=5, help="Number of threads to use")
     parser.add_argument("--timeout", type=int, default=5, help="Connection timeout in seconds")
     parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
-    parser.add_argument("--log-file", default='backuplog.txt', help="Path to the log file.")
     parser.add_argument(
         "--port",
         type=int,
@@ -677,7 +653,7 @@ def main():
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
     args = parser.parse_args()
 
-    setup_logger(args.log_file, not args.no_colors, args.debug)
+    setup_logger(not args.no_colors, args.debug)
 
     try:
         logger.info("-- Starting job --")
