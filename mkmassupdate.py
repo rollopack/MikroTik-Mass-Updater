@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v5.0.0
+#  MikroTik Mass Updater v5.0.1
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -18,6 +18,7 @@ import os
 import getpass
 import yaml
 from tqdm import tqdm
+from librouteros.query import Key
 
 
 # --- Logger setup definitions ---
@@ -394,16 +395,47 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
 
 def _reboot_router(api, entry_lines):
     """
-    Reboots the router and handles the expected disconnection.
+    Reboots the router by ensuring a reboot script exists and then running it.
+    This method is more reliable as it handles potential disconnects gracefully.
     """
-    entry_lines.append("  Attempt to reboot the router to apply the change...\n")
+    reboot_script_name = "mkmassupdate_reboot"
+    #entry_lines.append("  Rebooting router via script...\n")
+
     try:
-        api('/system/reboot')
-        time.sleep(1)
+        # Check if the reboot script already exists.
+        name_key = Key('name')
+        scripts = list(api.path('/system', 'script').select(name_key).where(name_key == reboot_script_name))
+        if scripts is None: # This check might be redundant now, but we'll keep it for safety.
+            entry_lines.append(f"  Failed to check for existing script '{reboot_script_name}'. Aborting reboot.\n")
+            return
+
+        # If the script doesn't exist, create it.
+        if not scripts:
+            #entry_lines.append(f"  Reboot script not found. Creating '{reboot_script_name}'...\n")
+            add_script_params = {
+                'name': reboot_script_name,
+                'source': '/system reboot',
+                'policy': 'reboot'
+            }
+            add_response = _execute_router_command(api, ('/system/script/add', add_script_params), entry_lines)
+            if add_response is None:
+                entry_lines.append("  Failed to create reboot script. Aborting reboot.\n")
+                return
+            entry_lines.append("  Reboot script created successfully.\n")
+
+        # Run the reboot script.
+        entry_lines.append("  Executing reboot script...\n")
+        # We expect this command to cause a disconnect, so we don't process the response.
+        script_path = api.path('/system', 'script')
+        tuple(script_path('run', **{'number': reboot_script_name}))
+        time.sleep(1) # Brief pause to allow the command to be sent before disconnect.
+
     except (socket.error, TimeoutError, ConnectionResetError):
+        # This is the expected outcome of a successful reboot command.
         entry_lines.append("  Router is rebooting as expected. Disconnected.\n")
     except Exception as e:
-        entry_lines.append(f"  An unexpected error occurred during reboot: {type(e).__name__}: {e}\n")
+        # Catch any other unexpected errors during the process.
+        entry_lines.append(f"  An unexpected error occurred during the reboot process: {type(e).__name__}: {e}\n")
 
 def _perform_firmware_upgrade(api, entry_lines):
     """
