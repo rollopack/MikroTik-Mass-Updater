@@ -1,6 +1,9 @@
 LICENSE
 .gitignore
 
+#Custom commands
+commands.yaml
+
 # Log files
 backuplog.txt
 backuplog*

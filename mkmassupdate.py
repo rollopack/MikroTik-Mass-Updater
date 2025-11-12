@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v4.9.3
+#  MikroTik Mass Updater v5.0.0
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -15,17 +15,10 @@ import librouteros
 import socket
 import logging # Import logging module
 import os
+import getpass
+import yaml
+from tqdm import tqdm
 
-custom_commands = [];
-#custom_commands = [
-#     ('/user/add', {
-#         'name': 'newuser',
-#         'password': '#######',
-#         'group': 'read'
-#     }),
-#     '/user/print',
-#     '/system/clock/print'
-# ]
 
 # --- Logger setup definitions ---
 # Define ANSI color codes (used by ColoredFormatter)
@@ -403,7 +396,7 @@ def _reboot_router(api, entry_lines):
     """
     Reboots the router and handles the expected disconnection.
     """
-    entry_lines.append("  Rebooting router to apply changes...\n")
+    entry_lines.append("  Attempt to reboot the router to apply the change...\n")
     try:
         api('/system/reboot')
         time.sleep(1)
@@ -446,7 +439,7 @@ def _perform_firmware_upgrade(api, entry_lines):
         entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
         return True  # Upgrade was staged
 
-def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware): # Modified signature
+def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware, pbar, custom_commands): # Modified signature
     # results = # This was removed in a previous step.
     api = None # Initialize api to None for each worker function call scope.
     
@@ -612,6 +605,9 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
                     # especially if stop_event was set and queue was cleared in main.
                     logger.debug(f"ValueError on q.task_done() in {threading.current_thread().name}. Queue might be empty.")
                     pass
+            
+            if IP is not None:
+                pbar.update(1)
 
 log_lock = threading.Lock() # Lock for synchronizing access to shared resources (aggregated_results)
 q = queue.Queue() # Queue for distributing host information to worker threads.
@@ -623,7 +619,7 @@ aggregated_results = [] # Shared list to store results from all worker threads.
 def main():
     parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
     parser.add_argument("-u", "--username", required=True, help="API username")
-    parser.add_argument("-p", "--password", required=True, help="API password")
+    parser.add_argument("-p", "--password", help="API password. If not provided, it will be asked for securely.")
     parser.add_argument("-t", "--threads", type=int, default=5, help="Number of threads to use")
     parser.add_argument("--timeout", type=int, default=5, help="Connection timeout in seconds")
     parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
@@ -651,67 +647,82 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
     parser.add_argument("--cloud-password", help="Password for cloud backup")
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
+    parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands to execute.")
     args = parser.parse_args()
 
+    if not args.password:
+        args.password = getpass.getpass(f"Enter password for user '{args.username}': ")
+
     setup_logger(not args.no_colors, args.debug)
+    pbar = None
+    
+    custom_commands = []
+    if args.custom_commands:
+        try:
+            with open(args.custom_commands, 'r') as f:
+                loaded_commands = yaml.safe_load(f)
+                if loaded_commands:
+                    for item in loaded_commands:
+                        if 'params' in item:
+                            custom_commands.append((item['command'], item['params']))
+                        else:
+                            custom_commands.append(item['command'])
+            logger.info(f"Loaded {len(custom_commands)} custom commands from {args.custom_commands}")
+        except FileNotFoundError:
+            logger.error(f"Custom commands file not found: {args.custom_commands}")
+        except Exception as e:
+            logger.error(f"Error parsing custom commands file: {e}")
 
     try:
         logger.info("-- Starting job --")
 
+        # Read the IP list file to get the total number of hosts for the progress bar.
+        try:
+            with open(args.ip_list, 'r') as f:
+                lines = [line for i, line in enumerate(f, 1) if i >= args.start_line and line.strip() and not line.strip().startswith('#')]
+            total_hosts = len(lines)
+            pbar = tqdm(total=total_hosts, desc="Processing hosts", unit="host")
+        except FileNotFoundError:
+            logger.error(f"IP list file not found: {args.ip_list}")
+            return # Exit if the list file is not found.
+
         # Start worker threads.
         for _ in range(args.threads):
-            # Removed log from args
             t = threading.Thread(
                 target=worker,
                 args=(
                     q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
-                    aggregated_results, args.update_check_attempts, args.update_check_delay, args.upgrade_firmware
+                    aggregated_results, args.update_check_attempts, args.update_check_delay, args.upgrade_firmware, pbar, custom_commands
                 ),
                 name=f"Worker-{_+1}"
             )
             threads.append(t)
             t.start()
 
-        # Populate the queue with host information from the IP list file.
-        try:
-            with open(args.ip_list, 'r') as f:
-                for i, line_content in enumerate(f, 1): # Renamed 'line' to 'line_content'
-                    if stop_event.is_set():
-                        logger.warning("Interruption detected, stopping queue population.")
-                        break
-                    stripped_line_for_check = line_content.strip()
-                    if stripped_line_for_check and not stripped_line_for_check.startswith('#'):
-                        if i >= args.start_line:
-                            host_info = parse_host_line(line_content, args.port)
-                            if host_info:
-                                q.put(host_info)
-        except FileNotFoundError:
-            logger.error(f"IP list file not found: {args.ip_list}")
-            stop_event.set() # Signal threads to stop if IP list is not found.
+        # Populate the queue with host information from the pre-read lines.
+        for line_content in lines:
+            if stop_event.is_set():
+                logger.warning("Interruption detected, stopping queue population.")
+                break
+            host_info = parse_host_line(line_content, args.port)
+            if host_info:
+                q.put(host_info)
 
         # Wait for the queue to be processed or for an interruption.
         while not q.empty() and not stop_event.is_set():
             time.sleep(0.1)
 
         # If not interrupted, wait for all tasks in the queue to be completed.
-        if not stop_event.is_set() and not q.empty():
-            logger.info("Waiting for all tasks in queue to complete normally...")
+        if not stop_event.is_set():
             q.join()
-        elif not stop_event.is_set() and q.empty():
-            # This means all items were processed and q.join() is not strictly needed
-            # as workers would have called task_done for each item they processed from the queue.
-            # However, calling q.join() on an empty queue that previously had items
-            # and for which all task_done() calls were made is non-blocking and safe.
-            # It ensures all tasks are accounted for if the queue became empty very quickly.
-            logger.debug("Queue is empty, all tasks presumed processed.")
-            q.join()
-
 
     except KeyboardInterrupt:
         logger.warning("\nInterrupted by user. Shutting down gracefully...")
-        stop_event.set() # Signal worker threads to stop.
+        stop_event.set()
 
     finally:
+        if pbar:
+            pbar.close()
         # This block ensures cleanup and reporting happen reliably.
         #logger.info("Waiting for worker threads to finish...")
 
@@ -734,14 +745,14 @@ def main():
             t.join()
 
         # Process and print the job summary.
-        total_hosts = len(aggregated_results)
+        total_hosts_processed = len(aggregated_results)
         successful_ops = sum(1 for res in aggregated_results if res["success"])
-        failed_ops = total_hosts - successful_ops
+        failed_ops = total_hosts_processed - successful_ops
         failed_ips = [res["IP"] for res in aggregated_results if not res["success"]]
 
         summary_lines = []
         summary_lines.append("\n\n-- Job Summary --\n")
-        summary_lines.append(f"Total hosts processed: {total_hosts}\n")
+        summary_lines.append(f"Total hosts processed: {total_hosts_processed}\n")
         summary_lines.append(f"Successful operations: {successful_ops}\n")
         summary_lines.append(f"Failed operations: {failed_ops}\n")
 

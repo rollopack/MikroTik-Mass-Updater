@@ -1,0 +1,26 @@
+# Example of custom commands.
+# Each item in the list represents a command to be executed on the routers.
+#
+# The structure for a simple command (like '/system/clock/print'):
+# - command: /path/to/command
+#
+# The structure for a command with parameters (like '/user/add'):
+# - command: /path/to/command
+#   params:
+#     key1: "value1"
+#     key2: "value2"
+#
+# You can mix and match simple and parameterized commands.
+# The script will execute them in the order they appear in this file.
+
+- command: /system/clock/print
+
+- command: /user/add
+  params:
+    name: "newuser"
+    password: "secure_password_123"
+    group: "read"
+
+- command: /ip/firewall/filter/print
+  params:
+    "?chain": "input" # Example of a query parameter

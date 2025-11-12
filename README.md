@@ -7,6 +7,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 *   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API.
 *   **Concurrent Operation:** Employs threading to connect to multiple devices simultaneously. The number of threads is configurable (`--threads`).
+*   **Progress Bar:** Provides a visual progress bar (`tqdm`) to track the processing of hosts.
 *   **Structured Logging:** Uses Python's standard `logging` module.
     *   Detailed logs are saved to a file in the `log` directory. Each run of the script generates a new log file with a timestamp in its name (e.g., `mkmassupdate-2023-10-27-10-30-00.log`). File logs include timestamps, log levels, and thread names.
     *   Console output is formatted for readability, with optional color-coding for different log levels (`--no-colors` to disable).
@@ -20,7 +21,8 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Update Logic:** Checks for and installs updates by default.
     *   `--dry-run` mode to simulate without actual installation.
     *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
-*   **Custom Commands:** Supports execution of user-defined custom commands on all devices.
+*   **Custom Commands (External):** Supports execution of user-defined custom commands loaded from an external YAML file (`--custom-commands`).
+*   **Secure Password Input:** If the password is not provided via command-line, the script will securely prompt for it.
 *   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly, attempting to stop operations and finalize.
 *   **Start Line:** Option to start processing the IP list from a specific line number (`--start-line`).
 
@@ -28,15 +30,18 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 *   **Python 3.6 or later**
 *   **`librouteros` library:** (Tested with v3.4.1, other versions might work)
+*   **`tqdm` library:** For the progress bar.
+*   **`pyyaml` library:** For loading custom commands from YAML files.
 
     ```bash
-    pip install librouteros
+    pip install librouteros tqdm pyyaml
     ```
 
-    or on Debian/Ubuntu:
+    or on Debian/Ubuntu (for `librouteros` only, `tqdm` and `pyyaml` usually need pip):
 
     ```bash
     sudo apt install python3-librouteros
+    pip install tqdm pyyaml
     ```
 
 ## Notes
@@ -48,7 +53,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 ## Options
 
 *   `-u USERNAME`, `--username USERNAME`: Specifies the API username. **(Required)**
-*   `-p PASSWORD`, `--password PASSWORD`: Specifies the API password. **(Required)**
+*   `-p PASSWORD`, `--password PASSWORD`: Specifies the API password. If not provided, the script will securely prompt for it.
 *   `-t THREADS`, `--threads THREADS`: Number of concurrent threads to use. Default: `5`.
 *   `--timeout TIMEOUT`: Connection timeout in seconds for API communication. Default: `5`.
 *   `--ip-list FILE_PATH`: Path to the IP list file. Default: `list.txt`.
@@ -61,69 +66,66 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--debug`: Enables debug logging level for more verbose output.
 *   `--cloud-password PASSWORD`: Password for cloud backup. **(Required for performing cloud backup)**
 *   `--upgrade-firmware`: Perform firmware upgrade.
+*   `--custom-commands FILE_PATH`: Path to a YAML file containing custom commands to execute on each router.
 
 ## Usage
 
 1.  Download or clone `mkmassupdate.py`.
-2.  Install the `librouteros` library.
+2.  Install the required libraries (see "Requirements" section).
 3.  Prepare your IP list file (default `list.txt`).
-4.  (Optional) Edit the `custom_commands` list within `mkmassupdate.py` for custom operations.
+4.  (Optional) Create a `commands.yaml` file for custom commands (see "Custom Commands File Format" below).
 5.  Run the script with your credentials and desired options:
 
     ```bash
-    python3 mkmassupdate.py -u your_username -p your_password [OPTIONS]
+    python3 mkmassupdate.py -u your_username [OPTIONS]
     ```
 
     **Examples:**
 
-    *   **Basic run:**
+    *   **Basic run (will prompt for password):**
         ```bash
-        python3 mkmassupdate.py -u admin -p pass123
+        python3 mkmassupdate.py -u admin
         ```
 
-    *   **Using a custom IP list and 20 threads:**
+    *   **Using a custom IP list and 20 threads with password provided:**
         ```bash
         python3 mkmassupdate.py -u admin -p pass123 --ip-list /path/to/my_routers.txt -t 20
         ```
 
-    *   **Dry run with increased timeout and debug logging:**
+    *   **Dry run with increased timeout and debug logging, using custom commands:**
         ```bash
-        python3 mkmassupdate.py -u admin -p pass123 --dry-run --timeout 30 --debug
+        python3 mkmassupdate.py -u admin --dry-run --timeout 30 --debug --custom-commands commands.yaml
         ```
 
     *   **Perform cloud backup with a specified password:**
         ```bash
-        python3 mkmassupdate.py -u admin -p pass123 --cloud-password your_cloud_backup_password
+        python3 mkmassupdate.py -u admin --cloud-password your_cloud_backup_password
         ```
     *   **Perform firmware upgrade:**
         ```bash
-        python3 mkmassupdate.py -u admin -p pass123 --upgrade-firmware
+        python3 mkmassupdate.py -u admin --upgrade-firmware
         ```
 
-## Custom Commands Format
+## Custom Commands File Format
 
-The `custom_commands` list in the script supports two formats:
+Custom commands are now loaded from an external YAML file specified by the `--custom-commands` argument. The file should contain a list of command definitions. Each command can be a simple string (for commands without parameters) or an object with `command` and `params` keys.
 
-1.  **Simple commands** (string):
-    ```python
-    '/interface/print'
-    ```
-2.  **Commands with parameters** (tuple: command string, parameters dictionary):
-    ```python
-    ('/user/add', {'name': 'newuser', 'password': 'userpass', 'group': 'read'})
-    ```
+**Example `commands.yaml`:**
 
-**Example `custom_commands` list:**
-
-```python
-custom_commands = [
-'/system/clock/print',
-('/interface/set', {
-	'numbers': 'ether1',  # Assuming 'numbers' is how you identify the interface
-	'comment': 'Main WAN Link'
-})
-]
+```yaml
+# Esempio di comandi personalizzati
+# Ogni elemento è una lista con [path, {dizionario_parametri}] o solo [path]
+- command: /system/clock/print
+- command: /user/add
+  params:
+    name: newuser
+    password: "secure_password_123"
+    group: read
+- command: /ip/firewall/filter/print
+  params:
+    "?chain": "input"
 ```
+
 Note: Parameter names must match MikroTik API specifications.
 
 ### IP List File Format (list.txt or custom)
