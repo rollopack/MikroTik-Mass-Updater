@@ -1,5 +1,5 @@
 # Example list.txt file
-# Format: IP[:PORT][|USERNAME|PASSWORD]
+# Format: IP[:PORT][|USERNAME|PASSWORD][|SSL]
 
 # Default port and credentials
 192.168.1.1
@@ -12,6 +12,18 @@
 
 # Custom port and credentials
 192.168.1.4:8729|admin|password123
+
+# SSL connection (auto-uses port 8729)
+192.168.1.5|SSL
+
+# SSL with custom port
+192.168.1.6:8730|SSL
+
+# SSL with custom credentials
+192.168.1.7|admin|password123|SSL
+
+# SSL with custom port and credentials
+192.168.1.8:8730|admin|password123|SSL
 
 # Comments are supported
 # Empty lines are ignored

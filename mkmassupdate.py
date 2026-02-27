@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v5.0.1
+#  MikroTik Mass Updater v5.0.3
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -13,6 +13,7 @@ import time
 import argparse
 import librouteros
 import socket
+import ssl
 import logging # Import logging module
 import os
 import getpass
@@ -162,17 +163,23 @@ def execute_with_retry(api, command, params=None, max_retries=3, retry_delay=5):
                 continue
             raise last_exception
 
-def parse_host_line(line, default_api_port):
+def parse_host_line(line, default_api_port, default_ssl_port=8729):
     """
     Parses a single line from the IP list file.
-    Expected format: IP[:PORT][|USERNAME|PASSWORD]
-    Returns a tuple (ip, port, username, password) or None on parsing error.
+    Expected format: IP[:PORT][|USERNAME|PASSWORD][|SSL]
+    Returns a tuple (ip, port, username, password, use_ssl) or None on parsing error.
     """
     stripped_line = line.strip()
     try:
-        # Format: IP[:PORT][|USERNAME|PASSWORD]
+        # Format: IP[:PORT][|USERNAME|PASSWORD][|SSL]
         parts = stripped_line.split('|')
         
+        # Check if the last part is the SSL flag (case-insensitive)
+        use_ssl = False
+        if parts and parts[-1].strip().upper() == 'SSL':
+            use_ssl = True
+            parts = parts[:-1]  # Remove the SSL flag from parts
+
         ip_port_str = parts[0]
         if not ip_port_str:
             raise ValueError("IP/Port part is empty")
@@ -182,7 +189,12 @@ def parse_host_line(line, default_api_port):
         if not ip:
             raise ValueError("IP address cannot be empty")
         
-        port_str = ip_port_parts[1] if len(ip_port_parts) > 1 else str(default_api_port) # Use default_api_port
+        has_custom_port = len(ip_port_parts) > 1
+        if has_custom_port:
+            port_str = ip_port_parts[1]
+        else:
+            # Use SSL default port (8729) if SSL is enabled and no custom port, otherwise use default_api_port
+            port_str = str(default_ssl_port) if use_ssl else str(default_api_port)
         port = int(port_str) # This can raise ValueError if port_str is not a valid integer
         if not (1 <= port <= 65535):
             raise ValueError(f"Port number {port} out of range (1-65535)")
@@ -191,7 +203,7 @@ def parse_host_line(line, default_api_port):
         username = parts[1] if len(parts) > 1 else None
         password = parts[2] if len(parts) > 2 else None
         
-        return ip, port, username, password
+        return ip, port, username, password, use_ssl
     except ValueError as e:
         logger.warning(f"Skipping malformed line in IP list: '{stripped_line}'. Error: {e}") # Replaced color_print
         return None
@@ -205,26 +217,38 @@ def parse_host_line(line, default_api_port):
 
 # Helper functions for worker
 
-def _connect_to_router(host_info, default_username, default_password, timeout):
+def _connect_to_router(host_info, default_username, default_password, timeout, global_ssl=False):
     """
     Establishes a connection to the MikroTik router using librouteros.
     Selects custom credentials if provided in host_info, otherwise uses defaults.
     Uses a minimum connection timeout of 30 seconds or the user-specified timeout, whichever is greater.
+    If SSL is enabled (per-host or globally), wraps the connection with SSL/TLS.
     Returns the API connection object.
     """
-    IP, port, custom_username, custom_password = host_info
+    IP, port, custom_username, custom_password, use_ssl = host_info
+    use_ssl = use_ssl or global_ssl  # Per-host flag OR global flag
     username = custom_username or default_username
     password = custom_password or default_password
 
     # Using max() ensures a robust minimum timeout for the initial connection phase.
-    effective_timeout = max(30, timeout) 
-    api = librouteros.connect(
+    effective_timeout = max(30, timeout)
+
+    connect_kwargs = dict(
         host=IP,
         username=username,
         password=password,
         port=int(port),
         timeout=effective_timeout
     )
+
+    if use_ssl:
+        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+        ssl_context.check_hostname = False
+        ssl_context.verify_mode = ssl.CERT_NONE
+        ssl_context.set_ciphers('ALL:@SECLEVEL=0')
+        connect_kwargs['ssl_wrapper'] = ssl_context.wrap_socket
+
+    api = librouteros.connect(**connect_kwargs)
     return api
 
 def _execute_router_command(api, command_item, entry_lines):
@@ -329,6 +353,9 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
 # Implemented cloud backup function
 def _perform_cloud_backup(api, cloud_password, entry_lines):
     #entry_lines.append("  Cloud backup: Checking for existing backups...\n")
+
+    # Brief delay to allow the router to establish cloud connectivity
+    time.sleep(3)
 
     # 1. Get a list of all existing cloud backups.
     existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
@@ -471,7 +498,7 @@ def _perform_firmware_upgrade(api, entry_lines):
         entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
         return True  # Upgrade was staged
 
-def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware, pbar, custom_commands): # Modified signature
+def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware, pbar, custom_commands, global_ssl=False): # Modified signature
     # results = # This was removed in a previous step.
     api = None # Initialize api to None for each worker function call scope.
     
@@ -490,12 +517,12 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
 
         try:
             host_info = q.get(timeout=1) # Get host from queue with timeout.
-            IP, _, _, _ = host_info      # Unpack host info.
+            IP, _, _, _, _ = host_info   # Unpack host info.
             
             entry_lines.append(f"\nHost: {IP}\n") # Start log entry for this host.
 
             # Attempt to connect to the router.
-            api = _connect_to_router(host_info, default_username, default_password, timeout)
+            api = _connect_to_router(host_info, default_username, default_password, timeout, global_ssl)
 
             # Define mapping for standard informational commands.
             default_commands_map = {
@@ -679,11 +706,18 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
     parser.add_argument("--cloud-password", help="Password for cloud backup")
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
+    parser.add_argument("--ssl", action="store_true",
+        help="Enable SSL for all connections (uses API-SSL port 8729 by default). "
+             "Can also be enabled per-host with |SSL in the IP list file.")
     parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands to execute.")
     args = parser.parse_args()
 
     if not args.password:
         args.password = getpass.getpass(f"Enter password for user '{args.username}': ")
+
+    # When --ssl is used globally, switch default port to 8729 (API-SSL) unless explicitly set
+    if args.ssl and args.port == 8728:
+        args.port = 8729
 
     setup_logger(not args.no_colors, args.debug)
     pbar = None
@@ -724,7 +758,7 @@ def main():
                 target=worker,
                 args=(
                     q, args.username, args.password, args.cloud_password, stop_event, args.timeout, args.dry_run,
-                    aggregated_results, args.update_check_attempts, args.update_check_delay, args.upgrade_firmware, pbar, custom_commands
+                    aggregated_results, args.update_check_attempts, args.update_check_delay, args.upgrade_firmware, pbar, custom_commands, args.ssl
                 ),
                 name=f"Worker-{_+1}"
             )

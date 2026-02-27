@@ -13,10 +13,11 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   Console output is formatted for readability, with optional color-coding for different log levels (`--no-colors` to disable).
     *   Debug mode for more verbose logging (`--debug`).
 *   **Job Summary:** At the end of execution, a summary is provided detailing total hosts processed, successful operations, and failed operations (including a list of specific failed IPs). "Unknown" host failures are counted in totals but not itemized in the failed IP list.
+*   **SSL/TLS Support:** Optional SSL connections via the MikroTik API-SSL service. Configurable per-host (`|SSL` flag in the IP list) or globally (`--ssl` flag). Certificate verification is disabled to support MikroTik's self-signed certificates.
 *   **Flexible Host Configuration:**
     *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
-    *   Supports `IP`, `IP:PORT`, and `IP[:PORT]|USERNAME|PASSWORD` formats in the list file.
-    *   Default API port is 8728, configurable via `--port`.
+    *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
+    *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`.
 *   **Error Handling:** Graceful handling of connection errors, API errors, and other exceptions, with retries for command execution. Malformed lines in the IP list are skipped with a warning.
 *   **Update Logic:** Checks for and installs updates by default.
     *   `--dry-run` mode to simulate without actual installation.
@@ -46,7 +47,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 ## Notes
 
-*   API access (port 8728 by default, or custom with `--port` or `IP:PORT` syntax) must be enabled on your Mikrotik devices.
+*   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
 *   The log file is overwritten each time the script is run.
 *   Default connection timeout is 15 seconds (change with `--timeout`).
 
@@ -66,6 +67,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--debug`: Enables debug logging level for more verbose output.
 *   `--cloud-password PASSWORD`: Password for cloud backup. **(Required for performing cloud backup)**
 *   `--upgrade-firmware`: Perform firmware upgrade.
+*   `--ssl`: Enables SSL/TLS for all connections. When used, the default port switches to `8729` (API-SSL). SSL can also be enabled per-host by appending `|SSL` to entries in the IP list file.
 *   `--custom-commands FILE_PATH`: Path to a YAML file containing custom commands to execute on each router.
 
 ## Usage
@@ -104,6 +106,11 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   **Perform firmware upgrade:**
         ```bash
         python3 mkmassupdate.py -u admin --upgrade-firmware
+        ```
+
+    *   **Connect using SSL for all routers:**
+        ```bash
+        python3 mkmassupdate.py -u admin --ssl
         ```
 
 ## Custom Commands File Format
@@ -146,6 +153,17 @@ One entry per line. Supported formats:
     ```
     192.168.1.3|customuser|custompass
     192.168.1.4:8729|customuser2|custompass2
+    ```
+
+*   **IP with SSL** (auto-uses port 8729)
+    ```
+    192.168.1.5|SSL
+    ```
+
+*   **IP[:port] with custom credentials and SSL**
+    ```
+    192.168.1.6|admin|password123|SSL
+    192.168.1.7:8730|admin|password123|SSL
     ```
 
 *   **Lines starting with # are comments. Empty lines are ignored.**
