@@ -1,4 +1,4 @@
-# MikroTik Mass Updater v5.0.5
+# MikroTik Mass Updater
 This is a Python script to send commands to multiple Mikrotik devices via the API. It provides concurrent operations, detailed logging (seamlessly integrated with the progress bar), a formatted job summary, and configurable settings.
 
 This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
