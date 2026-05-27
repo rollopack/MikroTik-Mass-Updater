@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 ####################################################
-#  MikroTik Mass Updater v5.0.3
+#  MikroTik Mass Updater v5.0.6
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -14,16 +14,17 @@ import argparse
 import librouteros
 import socket
 import ssl
-import logging # Import logging module
+import logging
 import os
 import getpass
 import yaml
 from tqdm import tqdm
 from librouteros.query import Key
 
+# Lock globale per la sincronizzazione dei log e dei risultati
+log_lock = threading.Lock()
 
 # --- Logger setup definitions ---
-# Define ANSI color codes (used by ColoredFormatter)
 class Colors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -34,36 +35,21 @@ class Colors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
-# Custom Formatter for colored logging
 class ColoredFormatter(logging.Formatter):
     LOG_COLORS = {
-        logging.DEBUG: Colors.OKBLUE, # Using Colors class
-        logging.INFO: Colors.OKGREEN,   # Using Colors class
-        logging.WARNING: Colors.WARNING, # Using Colors class
-        logging.ERROR: Colors.FAIL,   # Using Colors class
-        logging.CRITICAL: Colors.FAIL + Colors.BOLD, # Using Colors class
+        logging.DEBUG: Colors.OKBLUE,
+        logging.INFO: Colors.OKGREEN,
+        logging.WARNING: Colors.WARNING,
+        logging.ERROR: Colors.FAIL,
+        logging.CRITICAL: Colors.FAIL + Colors.BOLD,
     }
-    # Using Colors class defined below (now above)
-    # Ensure Colors class is defined before this Formatter if referenced directly by name.
-    # For now, using hardcoded ANSI codes matching the Colors class.
 
-    CONSOLE_FORMAT = "%(message)s" # Default for console, mimics old print behavior
-    CONSOLE_FORMAT_WITH_LEVEL = "%(levelname)s: %(message)s" # For levels other than INFO on console
+    CONSOLE_FORMAT = "%(message)s"
+    CONSOLE_FORMAT_WITH_LEVEL = "%(levelname)s: %(message)s"
 
     def __init__(self, use_colors=True):
         super().__init__()
         self.use_colors = use_colors
-        # Re-initialize LOG_COLORS here to ensure Colors class members are accessible
-        # if this class definition is moved before Colors. But with correct ordering, direct reference is fine.
-        # For safety and to ensure it uses the *actual* Colors class values:
-        self.LOG_COLORS = {
-            logging.DEBUG: Colors.OKBLUE,
-            logging.INFO: Colors.OKGREEN,
-            logging.WARNING: Colors.WARNING,
-            logging.ERROR: Colors.FAIL,
-            logging.CRITICAL: Colors.FAIL + Colors.BOLD,
-        }
-
         if self.use_colors:
             self.formatters = {
                 level: logging.Formatter(
@@ -79,106 +65,98 @@ class ColoredFormatter(logging.Formatter):
                  for level in self.LOG_COLORS.keys()
             }
         
-        # Default formatter for levels not in LOG_COLORS or when colors are off
         self.default_formatter = logging.Formatter(self.CONSOLE_FORMAT_WITH_LEVEL)
-        if not self.use_colors: # For INFO level when colors are off, ensure no levelname
+        if not self.use_colors:
              self.formatters[logging.INFO] = logging.Formatter(self.CONSOLE_FORMAT)
 
-
     def format(self, record):
-        # Get the actual message string after any formatting arguments have been applied.
         message_content = record.getMessage()
-
-        # Check if the stripped message content is empty.
         if not message_content.strip():
-            return ""  # Return an empty string to suppress all output for this record.
-
-        # If there is actual content, proceed with normal colorized formatting.
+            return ""
         formatter = self.formatters.get(record.levelno, self.default_formatter)
         return formatter.format(record)
 
-# Custom filter to prevent empty messages in file logs
+class TqdmLoggingHandler(logging.StreamHandler):
+    """Handler personalizzato per scrivere i log tramite tqdm senza rompere la progress bar"""
+    def emit(self, record):
+        try:
+            msg = self.format(record)
+            tqdm.write(msg)
+            self.flush()
+        except Exception:
+            self.handleError(record)
+
 class NoEmptyMessagesFilter(logging.Filter):
     def filter(self, record):
-        # Return True to process the record, False to discard it.
-        # We discard if the stripped message is empty.
         return bool(record.getMessage().strip())
 
 def setup_logger(use_colors_arg, debug_level=False):
     logger_instance = logging.getLogger("MKMikroTikUpdater")
     logger_instance.setLevel(logging.DEBUG if debug_level else logging.INFO)
-    logger_instance.propagate = False # Prevent root logger from handling messages in parent loggers
+    logger_instance.propagate = False
 
-    # Create log directory if it doesn't exist
     log_dir = 'log'
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    # Generate log file path
     log_filename = f"mkmassupdate-{time.strftime('%Y-%m-%d-%H-%M-%S')}.log"
     log_path = os.path.join(log_dir, log_filename)
 
-    # File Handler (always logs with no colors, includes thread names)
+    # File Handler
     fh = logging.FileHandler(log_path, mode='w', encoding='utf-8')
     fh_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
     fh.setFormatter(fh_formatter)
-    
-    # Add the custom filter to the file handler
-    fh.addFilter(NoEmptyMessagesFilter()) # <--- ADDED THIS LINE
-    
+    fh.addFilter(NoEmptyMessagesFilter())
     logger_instance.addHandler(fh)
 
-    # Console Handler
-    ch = logging.StreamHandler()
-    # No need to re-assign ColoredFormatter.LOG_COLORS here as it's done in __init__
-    ch_formatter = ColoredFormatter(use_colors=use_colors_arg) # Pass use_colors_arg
-
+    # Console Handler (Modificato per supportare Tqdm)
+    ch = TqdmLoggingHandler()
+    ch_formatter = ColoredFormatter(use_colors=use_colors_arg)
     ch.setFormatter(ch_formatter)
     logger_instance.addHandler(ch)
     
     return logger_instance
-# --- End of logger setup definitions ---
 
-# Initialize logger (now after definitions and args parsing)
 logger = logging.getLogger("MKMikroTikUpdater")
 
-# This section is now clean after previous refactoring.
-
 def execute_with_retry(api, command, params=None, max_retries=3, retry_delay=5):
-    """
-    Executes a librouteros API command with a specified number of retries on failure.
-    Handles TimeoutError and socket.error for retry attempts.
-    """
     last_exception = None
     for attempt in range(max_retries):
         try:
             if params is not None:
                 return list(api(command, **params))
             return list(api(command))
-        except (TimeoutError, socket.error) as e: # <--- Changed this line
+        except (TimeoutError, socket.error, librouteros.exceptions.LibRouterosError) as e:
             last_exception = e
-            logger.warning(f"Attempt {attempt + 1} failed: {e}") # Replaced color_print
+            logger.warning(f"Attempt {attempt + 1} failed: {e}")
             if attempt < max_retries - 1:
                 time.sleep(retry_delay)
                 continue
             raise last_exception
+        except librouteros.exceptions.TrapError as e:
+            cmd_str = command[0] if isinstance(command, tuple) else command
+            is_cloud_command = isinstance(cmd_str, str) and 'cloud' in cmd_str
+            
+            msg = getattr(e, 'message', '') or str(e)
+            msg_lower = msg.lower()
+            is_transient = any(term in msg_lower for term in ['connection', 'timeout', 'connect', 'resolve'])
+            
+            if is_cloud_command and is_transient:
+                last_exception = e
+                logger.warning(f"Attempt {attempt + 1} failed for cloud command '{cmd_str}' due to transient TrapError: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    continue
+            raise e
 
 def parse_host_line(line, default_api_port, default_ssl_port=8729):
-    """
-    Parses a single line from the IP list file.
-    Expected format: IP[:PORT][|USERNAME|PASSWORD][|SSL]
-    Returns a tuple (ip, port, username, password, use_ssl) or None on parsing error.
-    """
     stripped_line = line.strip()
     try:
-        # Format: IP[:PORT][|USERNAME|PASSWORD][|SSL]
         parts = stripped_line.split('|')
-        
-        # Check if the last part is the SSL flag (case-insensitive)
         use_ssl = False
         if parts and parts[-1].strip().upper() == 'SSL':
             use_ssl = True
-            parts = parts[:-1]  # Remove the SSL flag from parts
+            parts = parts[:-1]
 
         ip_port_str = parts[0]
         if not ip_port_str:
@@ -193,44 +171,27 @@ def parse_host_line(line, default_api_port, default_ssl_port=8729):
         if has_custom_port:
             port_str = ip_port_parts[1]
         else:
-            # Use SSL default port (8729) if SSL is enabled and no custom port, otherwise use default_api_port
             port_str = str(default_ssl_port) if use_ssl else str(default_api_port)
-        port = int(port_str) # This can raise ValueError if port_str is not a valid integer
+        port = int(port_str)
         if not (1 <= port <= 65535):
             raise ValueError(f"Port number {port} out of range (1-65535)")
         
-        # Parse optional credentials
         username = parts[1] if len(parts) > 1 else None
         password = parts[2] if len(parts) > 2 else None
         
         return ip, port, username, password, use_ssl
     except ValueError as e:
-        logger.warning(f"Skipping malformed line in IP list: '{stripped_line}'. Error: {e}") # Replaced color_print
+        logger.warning(f"Skipping malformed line in IP list: '{stripped_line}'. Error: {e}")
         return None
     except IndexError:
-        # This can happen if parts[0] is fine, but parts[1] or parts[2] are accessed without existing
-        # (e.g. "1.2.3.4|" or just "1.2.3.4" and code tries to access username/password beyond available parts)
-        # Or if ip_port_parts[1] is accessed when there's no ':' in ip_port_str (handled by default port_str logic, but good to be safe)
-        logger.warning(f"Skipping malformed line due to incorrect format: '{stripped_line}'. Check pipe and colon separators.") # Replaced color_print
+        logger.warning(f"Skipping malformed line due to incorrect format: '{stripped_line}'. Check pipe and colon separators.")
         return None
 
-
-# Helper functions for worker
-
 def _connect_to_router(host_info, default_username, default_password, timeout, global_ssl=False):
-    """
-    Establishes a connection to the MikroTik router using librouteros.
-    Selects custom credentials if provided in host_info, otherwise uses defaults.
-    Uses a minimum connection timeout of 30 seconds or the user-specified timeout, whichever is greater.
-    If SSL is enabled (per-host or globally), wraps the connection with SSL/TLS.
-    Returns the API connection object.
-    """
     IP, port, custom_username, custom_password, use_ssl = host_info
-    use_ssl = use_ssl or global_ssl  # Per-host flag OR global flag
+    use_ssl = use_ssl or global_ssl
     username = custom_username or default_username
     password = custom_password or default_password
-
-    # Using max() ensures a robust minimum timeout for the initial connection phase.
     effective_timeout = max(30, timeout)
 
     connect_kwargs = dict(
@@ -248,16 +209,25 @@ def _connect_to_router(host_info, default_username, default_password, timeout, g
         ssl_context.set_ciphers('ALL:@SECLEVEL=0')
         connect_kwargs['ssl_wrapper'] = ssl_context.wrap_socket
 
-    api = librouteros.connect(**connect_kwargs)
-    return api
+    return librouteros.connect(**connect_kwargs)
+
+def _sanitize_command_item(command_item):
+    """
+    Sanitizes command_item to hide sensitive information like passwords.
+    """
+    if isinstance(command_item, tuple):
+        cmd, params = command_item
+        if isinstance(params, dict):
+            sanitized_params = {}
+            for k, v in params.items():
+                if any(term in k.lower() for term in ['pass', 'secret']):
+                    sanitized_params[k] = '********'
+                else:
+                    sanitized_params[k] = v
+            return (cmd, sanitized_params)
+    return command_item
 
 def _execute_router_command(api, command_item, entry_lines):
-    """
-    Executes a single router command using the provided API connection.
-    Handles retries via `execute_with_retry` and appends errors to `entry_lines`.
-    `command_item` can be a string (command path) or a tuple (command path, parameters).
-    Returns the command response or None if an error occurs.
-    """
     try:
         if isinstance(command_item, tuple):
             cmd, params = command_item
@@ -266,43 +236,35 @@ def _execute_router_command(api, command_item, entry_lines):
             cmd = command_item
             response = execute_with_retry(api, cmd)
         return response
-    except (TimeoutError, socket.error) as e: # Catch generic TimeoutError and socket.error
-        entry_lines.append(f"  Error executing command {command_item}: TimeoutError after retries\n")
+    except (TimeoutError, socket.error) as e:
+        sanitized_item = _sanitize_command_item(command_item)
+        entry_lines.append(f"  Error executing command {sanitized_item}: TimeoutError after retries\n")
     except Exception as e:
-        entry_lines.append(f"  Error executing command {command_item}: {type(e).__name__}: {e}\n")
+        sanitized_item = _sanitize_command_item(command_item)
+        entry_lines.append(f"  Error executing command {sanitized_item}: {type(e).__name__}: {e}\n")
     return None
 
 def _process_identity(response, entry_lines):
-    """Processes the response from /system/identity/print."""
     if response:
         for res in response:
-            identity = res.get('name', 'N/A') # Use .get for safer dictionary access
+            identity = res.get('name', 'N/A')
             entry_lines.append(f"  Identity: {identity}\n")
 
 def _process_routerboard(response, entry_lines):
-    """Processes and appends routerboard information from the command response to entry_lines."""
     if response:
         for res in response:
-            model_name = res.get('board-name', res.get('model', 'N/A')) # Handle potential missing keys
+            model_name = res.get('board-name', res.get('model', 'N/A'))
             entry_lines.append(f"  Model: {model_name}\n")
 
 def _process_resource(response, entry_lines):
-    """Processes and appends system resource information (version) from the command response to entry_lines."""
     if response:
         for res in response:
             version = res.get('version', 'N/A')
-            # The 'stable' check was based on 'build-time' or similar, this might need review
-            # if 'stable' appears elsewhere in the actual response structure.
-            # For now, keeping original logic:
             if 'stable' in res.get('build-time', ''): 
-                version = f"{version} (stable)" # Use f-string
+                version = f"{version} (stable)"
             entry_lines.append(f"  Version: {version}\n")
 
 def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_delay):
-    """
-    Handles the full update process for a router.
-    Returns True if a reboot was triggered, False otherwise.
-    """
     entry_lines.append("  Checking for updates...\n")
     response = _execute_router_command(api, '/system/package/update/check-for-updates', entry_lines)
     if response is None:
@@ -350,65 +312,39 @@ def _check_and_process_updates(api, entry_lines, dry_run, check_attempts, check_
     
     return False
 
-# Implemented cloud backup function
 def _perform_cloud_backup(api, cloud_password, entry_lines):
-    #entry_lines.append("  Cloud backup: Checking for existing backups...\n")
-
-    # Brief delay to allow the router to establish cloud connectivity
     time.sleep(3)
-
-    # 1. Get a list of all existing cloud backups.
     existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
-
     if existing_backups is None:
-        # Error executing the print command is already logged by _execute_router_command.
         entry_lines.append("  Cloud backup: Failed to retrieve list of existing backups. Aborting.\n")
         return False
 
-    # 2. If backups exist, collect their IDs and remove them all in a single command.
     if existing_backups:
         backup_ids = [backup['.id'] for backup in existing_backups if '.id' in backup]
-        
         if backup_ids:
-            #entry_lines.append(f"  Cloud backup: Found {len(backup_ids)} existing backup(s). Removing...\n")
             all_removed_successfully = True
             for backup_id in backup_ids:
-                # Use singular 'number' and iterate to remove each backup individually for compatibility.
                 remove_params = {'number': backup_id}
                 response_remove = _execute_router_command(api, ('/system/backup/cloud/remove-file', remove_params), entry_lines)
                 if response_remove is None:
-                    # Error is logged by _execute_router_command, just mark failure and continue.
                     all_removed_successfully = False
-
             if not all_removed_successfully:
-                #entry_lines.append("  Cloud backup: Failed to remove one or more existing backups.\n")
                 return False
-            #else:
-                #entry_lines.append("  Cloud backup: Successfully removed all existing backups.\n")
-    #else:
-        #entry_lines.append("  Cloud backup: No previous backups found.\n")
 
-    # 3. Create and upload new backup
-    #entry_lines.append("  Cloud backup: Creating and uploading new backup...\n")
     upload_params = {
         'action': 'create-and-upload',
         'password': cloud_password
     }
     response_upload = _execute_router_command(api, ('/system/backup/cloud/upload-file', upload_params), entry_lines)
-
     if response_upload is None:
         entry_lines.append("  Cloud backup: Failed to create and upload new backup.\n")
         return False
     
     entry_lines.append("  Cloud backup: Successfully created and uploaded new backup.\n")
-
-    # After successful backup, retrieve the secret-download-key
-    time.sleep(2) # Give the router a moment to process
-    #entry_lines.append("  Cloud backup: Retrieving secret download key...\n")
+    time.sleep(2)
     latest_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
 
     if latest_backups:
-        # Assuming the first backup in the list is the one just created
         latest_backup = latest_backups[0]
         secret_key = latest_backup.get('secret-download-key')
         if secret_key:
@@ -421,24 +357,15 @@ def _perform_cloud_backup(api, cloud_password, entry_lines):
     return True
 
 def _reboot_router(api, entry_lines):
-    """
-    Reboots the router by ensuring a reboot script exists and then running it.
-    This method is more reliable as it handles potential disconnects gracefully.
-    """
     reboot_script_name = "mkmassupdate_reboot"
-    #entry_lines.append("  Rebooting router via script...\n")
-
     try:
-        # Check if the reboot script already exists.
         name_key = Key('name')
         scripts = list(api.path('/system', 'script').select(name_key).where(name_key == reboot_script_name))
-        if scripts is None: # This check might be redundant now, but we'll keep it for safety.
+        if scripts is None:
             entry_lines.append(f"  Failed to check for existing script '{reboot_script_name}'. Aborting reboot.\n")
             return
 
-        # If the script doesn't exist, create it.
         if not scripts:
-            #entry_lines.append(f"  Reboot script not found. Creating '{reboot_script_name}'...\n")
             add_script_params = {
                 'name': reboot_script_name,
                 'source': '/system reboot',
@@ -450,28 +377,17 @@ def _reboot_router(api, entry_lines):
                 return
             entry_lines.append("  Reboot script created successfully.\n")
 
-        # Run the reboot script.
         entry_lines.append("  Executing reboot script...\n")
-        # We expect this command to cause a disconnect, so we don't process the response.
         script_path = api.path('/system', 'script')
         tuple(script_path('run', **{'number': reboot_script_name}))
-        time.sleep(1) # Brief pause to allow the command to be sent before disconnect.
+        time.sleep(1)
 
     except (socket.error, TimeoutError, ConnectionResetError):
-        # This is the expected outcome of a successful reboot command.
         entry_lines.append("  Router is rebooting as expected. Disconnected.\n")
     except Exception as e:
-        # Catch any other unexpected errors during the process.
         entry_lines.append(f"  An unexpected error occurred during the reboot process: {type(e).__name__}: {e}\n")
 
 def _perform_firmware_upgrade(api, entry_lines):
-    """
-    Checks for and performs a firmware upgrade.
-    Returns:
-        - True: if an upgrade was successfully staged.
-        - False: if an error occurred.
-        - None: if no upgrade was needed (already up-to-date).
-    """
     routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
     if not routerboard_info:
         entry_lines.append("  Firmware upgrade: Failed to retrieve routerboard information. Aborting.\n")
@@ -487,98 +403,71 @@ def _perform_firmware_upgrade(api, entry_lines):
 
     if current_firmware == upgrade_firmware:
         entry_lines.append(f"  Firmware is up to date (current: {current_firmware}). No upgrade needed.\n")
-        return None  # No upgrade needed, not an error
+        return None
     else:
         entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
-        entry_lines.append("  Firmware upgrade: Attempting to upgrade...\n")
+        #entry_lines.append("  Firmware upgrade: Attempting to upgrade...\n")
         upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
         if upgrade_response is None:
             entry_lines.append("  Firmware upgrade: Failed.\n")
-            return False  # Actual failure
+            return False
         entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
-        return True  # Upgrade was staged
+        return True
 
-def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware, pbar, custom_commands, global_ssl=False): # Modified signature
-    # results = # This was removed in a previous step.
-    api = None # Initialize api to None for each worker function call scope.
-    
+def worker(q, default_username, default_password, cloud_password, stop_event, timeout, dry_run, aggregated_results_list, update_check_attempts, update_check_delay, upgrade_firmware, pbar, custom_commands, global_ssl=False):
+    api = None
     while not stop_event.is_set():
-        entry_lines = [] # Stores log messages for the current host.
-        success = False  # Assume failure for the current host processing.
-        IP = None        # IP address of the current host.
-                         # API connection object, specific to this host processing attempt.
-                         # Resetting api to None for each host attempt inside the loop is safer,
-                         # but given it's assigned in the try block, it effectively is.
-                         # The function-scoped `api` initialized outside the loop handles cases
-                         # where q.get() might fail before api is assigned in the try.
-                         # Current `api` is function-scoped, so it persists if not reassigned.
-                         # Let's keep it as is, if `_connect_to_router` fails, `api` remains from previous or None.
-                         # The `finally` block correctly handles `if api:` before closing.
+        entry_lines = []
+        success = False
+        IP = None
 
         try:
-            host_info = q.get(timeout=1) # Get host from queue with timeout.
-            IP, _, _, _, _ = host_info   # Unpack host info.
-            
-            entry_lines.append(f"\nHost: {IP}\n") # Start log entry for this host.
+            host_info = q.get(timeout=1)
+            IP, _, _, _, _ = host_info
+            entry_lines.append(f"\nHost: {IP}\n")
 
-            # Attempt to connect to the router.
             api = _connect_to_router(host_info, default_username, default_password, timeout, global_ssl)
 
-            # Define mapping for standard informational commands.
             default_commands_map = {
                 '/system/identity/print': _process_identity,
                 '/system/routerboard/print': _process_routerboard,
                 '/system/resource/print': _process_resource,
             }
 
-            # Combine default and custom commands for processing.
             all_commands_to_process = [
                 '/system/identity/print',
                 '/system/routerboard/print',
                 '/system/resource/print',
             ] + custom_commands
 
-            command_execution_successful = True # Flag to track if all commands execute without error.
-
-            # Process each command.
+            command_execution_successful = True
             for command_item in all_commands_to_process:
                 command_path = command_item[0] if isinstance(command_item, tuple) else command_item
-                
                 response = _execute_router_command(api, command_item, entry_lines)
-                if response is None: # Error already logged by _execute_router_command
+                if response is None:
                     command_execution_successful = False
-                    # Original behavior was to continue processing other commands for the host.
                     continue 
 
-                # If command is a standard one, use its specific processor.
                 if command_path in default_commands_map:
                     default_commands_map[command_path](response, entry_lines)
                 else:
-                    # Generic handling for custom commands.
                     entry_lines.append(f"  Response for {command_path}:\n")
                     for res_item in response: 
                         entry_lines.append(f"    {res_item}\n")
             
-            # If any command failed, mark overall success for this host as false.
             if not command_execution_successful:
                 success = False
             else:
-                # All informational/custom commands were successful.
-                # Start with success=True and set to False if any subsequent step fails.
                 success = True
-
-                # Perform cloud backup if password is provided. This is now a best-effort step.
                 if cloud_password:
                     backup_success = _perform_cloud_backup(api, cloud_password, entry_lines)
                     if not backup_success:
                         entry_lines.append("  Warning: Cloud backup failed. Proceeding with updates regardless.\n")
-                        # Do not set success to False. Allow the process to continue.
 
-                # If the main process has been successful so far, proceed to check/process updates.
                 firmware_upgraded = False
                 if success and upgrade_firmware:
                     firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines)
-                    if firmware_upgrade_status is False: # Explicitly check for False
+                    if firmware_upgrade_status is False:
                         success = False
                     elif firmware_upgrade_status is True:
                         firmware_upgraded = True
@@ -590,91 +479,63 @@ def worker(q, default_username, default_password, cloud_password, stop_event, ti
                     if not reboot_triggered and firmware_upgraded:
                         _reboot_router(api, entry_lines)
         except librouteros.exceptions.TrapError as e:
-            # Handle specific API errors like authentication failure.
-            # Using f-string for error message.
             error_message = f"  Error: {type(e).__name__}: {e.message} (code: {e.code})\n"
-            if e.message and not str(e.code) in e.message: # Avoid duplicating code in message
+            if e.message and not str(e.code) in e.message:
                  error_message = f"  Error: {e.message}\n"
             entry_lines.append(error_message)
             success = False
         except (TimeoutError, socket.error) as e:
-            # Handle connection errors (timeout, socket issues).
             entry_lines.append(f"  Error: Connection failed - {type(e).__name__}: {e}\n")
             success = False
         except queue.Empty:
-            # Worker timed out waiting for a new item; normal for shutdown or empty queue.
-            if stop_event.is_set(): # Log if stopping, otherwise it's just a timeout
-                logger.debug(f"Worker {threading.current_thread().name} exiting due to stop_event and empty queue.")
-            return # Exit worker thread.
+            if stop_event.is_set():
+                logger.debug(f"Worker {threading.current_thread().name} exiting due to stop_event.")
+            return
         except Exception as e:
-            # Catch-all for other unexpected errors during host processing.
             if IP:
                  entry_lines.append(f"  Unexpected error processing host {IP}: {type(e).__name__}: {e}\n")
             else:
                  entry_lines.append(f"  Unexpected error: {type(e).__name__}: {e}\n")
             success = False
         finally:
-            # This block executes regardless of exceptions in the try block.
-            # Ensure API connection is closed if it was opened.
             if api:
                 try:
                     api.close()
-                    # Ensure no "API connection closed" message is appended here.
-                except Exception as e_close:
-                    # Suppress errors from api.close() by doing nothing.
+                except Exception:
                     pass
 
-            # Ensure some log output if entry_lines is empty for some reason.
             if not entry_lines and IP: 
-                # This case might still be relevant if a connection was attempted for a known IP
-                # but failed very early, before any specific messages were added.
                 entry_lines.append(f"\nHost: {IP}\n  No operations performed or error before logging started.\n")
-            # REMOVED the "elif not entry_lines and not IP:" block to suppress "Unknown Host" messages.
-            # elif not entry_lines and not IP: 
-            #      entry_lines.append("\nUnknown Host\n  No operations performed or error before logging started.\n")
             
             final_entry_text = "".join(entry_lines).strip() 
 
-            with log_lock: # Protects shared resources: logger and aggregated_results_list
-                if final_entry_text: # Only add separator if there is actual content for the host
-                    logger.info("-" * 70) # Log a separator line (REMOVED leading "\n")
+            with log_lock:
+                if final_entry_text:
+                    logger.info("-" * 70)
 
                 if success:
                     logger.info(final_entry_text)
                 else:
                     logger.error(final_entry_text)
 
-                # Only append to results if an IP was actually assigned and processed in this iteration.
                 if IP is not None:
-                    # current_ip_for_results is not strictly needed anymore if we only append when IP is not None.
-                    # We can directly use IP.
                     aggregated_results_list.append({"IP": IP, "success": success})
-                else:
-                    # This 'else' block is for workers that hit queue.Empty before processing an IP.
-                    # They should not contribute to aggregated_results.
-                    # If there's a need to know how many workers exited idly, that's a different metric,
-                    # not part of "hosts processed".
-                    pass 
 
             if not stop_event.is_set(): 
                 try:
                     q.task_done()
                 except ValueError: 
-                    # This can happen if task_done() is called on an empty queue,
-                    # especially if stop_event was set and queue was cleared in main.
-                    logger.debug(f"ValueError on q.task_done() in {threading.current_thread().name}. Queue might be empty.")
+                    logger.debug(f"ValueError on q.task_done() in {threading.current_thread().name}.")
                     pass
             
             if IP is not None:
                 pbar.update(1)
 
-log_lock = threading.Lock() # Lock for synchronizing access to shared resources (aggregated_results)
-q = queue.Queue() # Queue for distributing host information to worker threads.
-threads = [] # List to keep track of worker threads.
-stop_event = threading.Event() # Event to signal worker threads to stop.
-aggregated_results = [] # Shared list to store results from all worker threads.
+q = queue.Queue()
+threads = []
+stop_event = threading.Event()
+aggregated_results = []
 
-# Main script execution block
 def main():
     parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
     parser.add_argument("-u", "--username", required=True, help="API username")
@@ -682,40 +543,22 @@ def main():
     parser.add_argument("-t", "--threads", type=int, default=5, help="Number of threads to use")
     parser.add_argument("--timeout", type=int, default=5, help="Connection timeout in seconds")
     parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=8728,
-        help="Default API port to use if not specified in the IP list file (e.g., IP:PORT)."
-    )
-    parser.add_argument(
-        "--update-check-attempts",
-        type=int,
-        default=15,
-        help="Number of attempts to check update status after issuing check-for-updates."
-    )
-    parser.add_argument(
-        "--update-check-delay",
-        type=float,
-        default=2.0,
-        help="Delay (in seconds) between update status checks."
-    )
+    parser.add_argument("--port", type=int, default=8728, help="Default API port.")
+    parser.add_argument("--update-check-attempts", type=int, default=15, help="Number of attempts to check update status.")
+    parser.add_argument("--update-check-delay", type=float, default=2.0, help="Delay between update status checks.")
     parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
-    parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode (skip update installation)")
-    parser.add_argument("--start-line", type=int, default=1, help="Start from this line number in list.txt (1-based)")
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging level.") # Add --debug argument
+    parser.add_argument("--dry-run", action="store_true", help="Enable dry run mode")
+    parser.add_argument("--start-line", type=int, default=1, help="Start from this line number")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging level.")
     parser.add_argument("--cloud-password", help="Password for cloud backup")
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
-    parser.add_argument("--ssl", action="store_true",
-        help="Enable SSL for all connections (uses API-SSL port 8729 by default). "
-             "Can also be enabled per-host with |SSL in the IP list file.")
-    parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands to execute.")
+    parser.add_argument("--ssl", action="store_true", help="Enable SSL for all connections")
+    parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands.")
     args = parser.parse_args()
 
     if not args.password:
         args.password = getpass.getpass(f"Enter password for user '{args.username}': ")
 
-    # When --ssl is used globally, switch default port to 8729 (API-SSL) unless explicitly set
     if args.ssl and args.port == 8728:
         args.port = 8729
 
@@ -742,7 +585,6 @@ def main():
     try:
         logger.info("-- Starting job --")
 
-        # Read the IP list file to get the total number of hosts for the progress bar.
         try:
             with open(args.ip_list, 'r') as f:
                 lines = [line for i, line in enumerate(f, 1) if i >= args.start_line and line.strip() and not line.strip().startswith('#')]
@@ -750,9 +592,8 @@ def main():
             pbar = tqdm(total=total_hosts, desc="Processing hosts", unit="host")
         except FileNotFoundError:
             logger.error(f"IP list file not found: {args.ip_list}")
-            return # Exit if the list file is not found.
+            return
 
-        # Start worker threads.
         for _ in range(args.threads):
             t = threading.Thread(
                 target=worker,
@@ -765,7 +606,6 @@ def main():
             threads.append(t)
             t.start()
 
-        # Populate the queue with host information from the pre-read lines.
         for line_content in lines:
             if stop_event.is_set():
                 logger.warning("Interruption detected, stopping queue population.")
@@ -774,11 +614,9 @@ def main():
             if host_info:
                 q.put(host_info)
 
-        # Wait for the queue to be processed or for an interruption.
         while not q.empty() and not stop_event.is_set():
             time.sleep(0.1)
 
-        # If not interrupted, wait for all tasks in the queue to be completed.
         if not stop_event.is_set():
             q.join()
 
@@ -789,69 +627,48 @@ def main():
     finally:
         if pbar:
             pbar.close()
-        # This block ensures cleanup and reporting happen reliably.
-        #logger.info("Waiting for worker threads to finish...")
 
-        # If interrupted, clear any remaining items from the queue.
         if stop_event.is_set():
             logger.warning("Clearing queue due to interruption...")
             while not q.empty():
                 try:
-                    q.get_nowait() # Remove item without blocking.
-                    q.task_done()  # Mark as done to allow q.join() later if it were used.
+                    q.get_nowait()
+                    q.task_done()
                 except queue.Empty:
-                    logger.debug("Queue is now empty during interrupt cleanup.")
                     break
                 except ValueError:
-                    logger.debug("ValueError during queue cleanup, q.task_done() called too many times.")
-                    break # Should not happen if task_done only called after get_nowait.
+                    break
 
-        # Wait for all worker threads to complete their current tasks and exit.
         for t in threads:
             t.join()
 
-        # Process and print the job summary.
+        # --- Output Summary Ottimizzato ---
         total_hosts_processed = len(aggregated_results)
         successful_ops = sum(1 for res in aggregated_results if res["success"])
         failed_ops = total_hosts_processed - successful_ops
         failed_ips = [res["IP"] for res in aggregated_results if not res["success"]]
 
-        summary_lines = []
-        summary_lines.append("\n\n-- Job Summary --\n")
-        summary_lines.append(f"Total hosts processed: {total_hosts_processed}\n")
-        summary_lines.append(f"Successful operations: {successful_ops}\n")
-        summary_lines.append(f"Failed operations: {failed_ops}\n")
+        # Utilizzo delle multi-line f-strings per un blocco visivo pulito e leggibile
+        summary_output = (
+            f"\n\n========================================\n"
+            f"             JOB SUMMARY                \n"
+            f"========================================\n"
+            f" Total hosts processed : {total_hosts_processed}\n"
+            f" Successful operations : {successful_ops}\n"
+            f" Failed operations     : {failed_ops}\n"
+            f"========================================"
+        )
 
         if failed_ops > 0:
-            summary_lines.append("Failed IPs:\n") # Keep this header
+            summary_output += "\n Failed IPs:\n"
+            for specific_ip in failed_ips:
+                if specific_ip != "Unknown (worker exited early)":
+                    summary_output += f"  ❌ - {specific_ip}\n"
+            summary_output += "========================================"
 
-            unknown_host_marker = "Unknown (worker exited early)"
-            # We still need to filter them out from being individually listed if they were part of failed_ips
-            specific_failed_ips = [ip for ip in failed_ips if ip != unknown_host_marker]
-
-            # The line counting unknown_host_count and appending it is simply removed.
-            # No 'if unknown_host_count > 0:' block that appends to summary_message_lines.
-
-            for specific_ip in specific_failed_ips:
-                summary_lines.append(f"  - {specific_ip}\n")
-
-        summary_output = "".join(summary_lines) # This already contains the desired structure with newlines.
-
-        # Consolidate into a single logger call for the entire summary.
-        # The summary_output string already has a leading "\n\n-- Job Summary --\n"
-        # and subsequent lines are newline-terminated.
-        # We just need to ensure it's logged once.
-        # The ColoredFormatter for INFO level on console is just "%(message)s",
-        # so it will print the multi-line string as is.
-        # The file logger will also log it as a multi-line string.
-        logger.info(summary_output.strip()) # Use strip() to remove any trailing newline from the last item, if any.
-                                          # The initial "\n\n" will provide spacing.
-
-        logger.info("-- Job finished --") # For file and console.
-
-        # log.flush() # Removed
-        # log.close() # Removed: File closing handled by logging.shutdown()
-        logging.shutdown() # Add logging.shutdown()
+        logger.info(summary_output)
+        logger.info("-- Job finished --")
+        logging.shutdown()
 
 if __name__ == '__main__':
     main()

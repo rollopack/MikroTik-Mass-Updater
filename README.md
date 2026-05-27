@@ -1,5 +1,5 @@
-# MikroTik Mass Updater
-This is a Python script to send commands to multiple Mikrotik devices via the API. It provides concurrent operations, detailed logging (with optional console colors), a job summary, and configurable settings.
+# MikroTik Mass Updater v5.0.5
+This is a Python script to send commands to multiple Mikrotik devices via the API. It provides concurrent operations, detailed logging (seamlessly integrated with the progress bar), a formatted job summary, and configurable settings.
 
 This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
 
@@ -9,16 +9,16 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Concurrent Operation:** Employs threading to connect to multiple devices simultaneously. The number of threads is configurable (`--threads`).
 *   **Progress Bar:** Provides a visual progress bar (`tqdm`) to track the processing of hosts.
 *   **Structured Logging:** Uses Python's standard `logging` module.
-    *   Detailed logs are saved to a file in the `log` directory. Each run of the script generates a new log file with a timestamp in its name (e.g., `mkmassupdate-2023-10-27-10-30-00.log`). File logs include timestamps, log levels, and thread names.
-    *   Console output is formatted for readability, with optional color-coding for different log levels (`--no-colors` to disable).
+    *   Detailed logs are saved to a file in the `log` directory. Each run of the script generates a new log file with a timestamp in its name. File logs include timestamps, log levels, and thread names.
+    *   Console output seamlessly integrates with the `tqdm` progress bar to prevent visual glitches, and includes optional color-coding for different log levels (`--no-colors` to disable).
     *   Debug mode for more verbose logging (`--debug`).
-*   **Job Summary:** At the end of execution, a summary is provided detailing total hosts processed, successful operations, and failed operations (including a list of specific failed IPs). "Unknown" host failures are counted in totals but not itemized in the failed IP list.
+*   **Job Summary:** At the end of execution, a cleanly formatted visual summary is provided detailing total hosts processed, successful operations, and failed operations (including a list of specific failed IPs).
 *   **SSL/TLS Support:** Optional SSL connections via the MikroTik API-SSL service. Configurable per-host (`|SSL` flag in the IP list) or globally (`--ssl` flag). Certificate verification is disabled to support MikroTik's self-signed certificates.
 *   **Flexible Host Configuration:**
     *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
     *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
     *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`.
-*   **Error Handling:** Graceful handling of connection errors, API errors, and other exceptions, with retries for command execution. Malformed lines in the IP list are skipped with a warning.
+*   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning.
 *   **Update Logic:** Checks for and installs updates by default.
     *   `--dry-run` mode to simulate without actual installation.
     *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
@@ -48,8 +48,8 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 ## Notes
 
 *   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
-*   The log file is overwritten each time the script is run.
-*   Default connection timeout is 15 seconds (change with `--timeout`).
+*   The log file is created fresh each time the script is run with a timestamp.
+*   Default connection timeout is 5 seconds (change with `--timeout`).
 
 ## Options
 
@@ -120,8 +120,8 @@ Custom commands are now loaded from an external YAML file specified by the `--cu
 **Example `commands.yaml`:**
 
 ```yaml
-# Esempio di comandi personalizzati
-# Ogni elemento è una lista con [path, {dizionario_parametri}] o solo [path]
+# Example of custom commands
+# Each item is a list containing [path, {parameter_dictionary}] or just [path]
 - command: /system/clock/print
 - command: /user/add
   params:
