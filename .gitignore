@@ -4,6 +4,12 @@ LICENSE
 #Custom commands
 commands.yaml
 
+#Demo / screenshot scripts
+demo_screenshots.py
+
+# Configuration files
+config.yaml
+
 # Log files
 backuplog.txt
 backuplog*
@@ -31,3 +37,4 @@ env/
 # History
 .lh/
 .history/
+AGENTS.md

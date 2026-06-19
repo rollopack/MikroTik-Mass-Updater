@@ -7,32 +7,34 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 *   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API.
 *   **Concurrent Operation:** Employs threading to connect to multiple devices simultaneously. The number of threads is configurable (`--threads`).
-*   **Progress Bar:** Provides a visual progress bar (`tqdm`) to track the processing of hosts.
+*   **Progress Bar:** Provides a visual progress bar (`tqdm`) with live counters (ok/fail).
 *   **Structured Logging:** Uses Python's standard `logging` module.
     *   Detailed logs are saved to a file in the `log` directory. Each run of the script generates a new log file with a timestamp in its name. File logs include timestamps, log levels, and thread names.
     *   Console output seamlessly integrates with the `tqdm` progress bar to prevent visual glitches, and includes optional color-coding for different log levels (`--no-colors` to disable).
     *   Debug mode for more verbose logging (`--debug`).
-*   **Job Summary:** At the end of execution, a cleanly formatted visual summary is provided detailing total hosts processed, successful operations, and failed operations (including a list of specific failed IPs).
+*   **Job Summary:** At the end of execution, a cleanly formatted visual summary is provided detailing total hosts processed, successful operations, failed operations (including a list of specific failed IPs), and elapsed time. Exit code is `0` for all-success, `1` if any failure occurred.
+*   **YAML Configuration File:** All CLI options can be specified via a YAML configuration file (`--config`). CLI arguments override config file values.
 *   **SSL/TLS Support:** Optional SSL connections via the MikroTik API-SSL service. Configurable per-host (`|SSL` flag in the IP list) or globally (`--ssl` flag). Certificate verification is disabled to support MikroTik's self-signed certificates.
 *   **Flexible Host Configuration:**
     *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
     *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
     *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`.
-*   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning.
+*   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning. Error messages include the target IP:port.
 *   **Update Logic:** Checks for and installs updates by default.
-    *   `--dry-run` mode to simulate without actual installation.
+    *   `--dry-run` mode to simulate without actual installation (indicated in progress bar and summary).
     *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
 *   **Custom Commands (External):** Supports execution of user-defined custom commands loaded from an external YAML file (`--custom-commands`).
-*   **Secure Password Input:** If the password is not provided via command-line, the script will securely prompt for it.
-*   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly, attempting to stop operations and finalize.
+*   **Secure Password Input:** If the password is not provided via command-line or config file, the script will securely prompt for it.
+*   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly. A second Ctrl+C during shutdown is silently caught without traceback.
 *   **Start Line:** Option to start processing the IP list from a specific line number (`--start-line`).
+*   **Exit Codes:** `0` on complete success, `1` if any host failed or IP list file was not found.
 
 ## Requirements
 
 *   **Python 3.6 or later**
 *   **`librouteros` library:** (Tested with v3.4.1, other versions might work)
 *   **`tqdm` library:** For the progress bar.
-*   **`pyyaml` library:** For loading custom commands from YAML files.
+*   **`pyyaml` library:** For loading custom commands and configuration from YAML files.
 
     ```bash
     pip install librouteros tqdm pyyaml
@@ -49,11 +51,11 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 *   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
 *   The log file is created fresh each time the script is run with a timestamp.
-*   Default connection timeout is 5 seconds (change with `--timeout`).
+*   Default connection timeout is 5 seconds (change with `--timeout`). The effective minimum is clamped to 30 seconds.
 
 ## Options
 
-*   `-u USERNAME`, `--username USERNAME`: Specifies the API username. **(Required)**
+*   `-u USERNAME`, `--username USERNAME`: Specifies the API username. Can be provided via `--config` instead of CLI.
 *   `-p PASSWORD`, `--password PASSWORD`: Specifies the API password. If not provided, the script will securely prompt for it.
 *   `-t THREADS`, `--threads THREADS`: Number of concurrent threads to use. Default: `5`.
 *   `--timeout TIMEOUT`: Connection timeout in seconds for API communication. Default: `5`.
@@ -69,6 +71,8 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--upgrade-firmware`: Perform firmware upgrade.
 *   `--ssl`: Enables SSL/TLS for all connections. When used, the default port switches to `8729` (API-SSL). SSL can also be enabled per-host by appending `|SSL` to entries in the IP list file.
 *   `--custom-commands FILE_PATH`: Path to a YAML file containing custom commands to execute on each router.
+*   `--config FILE_PATH`: Path to a YAML configuration file. CLI arguments override config file values.
+*   `--version`: Display version and exit.
 
 ## Usage
 
@@ -76,7 +80,8 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 2.  Install the required libraries (see "Requirements" section).
 3.  Prepare your IP list file (default `list.txt`).
 4.  (Optional) Create a `commands.yaml` file for custom commands (see "Custom Commands File Format" below).
-5.  Run the script with your credentials and desired options:
+5.  (Optional) Create a `config.yaml` file to store common options (see "Config File Format" below).
+6.  Run the script with your credentials and desired options:
 
     ```bash
     python3 mkmassupdate.py -u your_username [OPTIONS]
@@ -103,6 +108,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
         ```bash
         python3 mkmassupdate.py -u admin --cloud-password your_cloud_backup_password
         ```
+
     *   **Perform firmware upgrade:**
         ```bash
         python3 mkmassupdate.py -u admin --upgrade-firmware
@@ -113,9 +119,41 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
         python3 mkmassupdate.py -u admin --ssl
         ```
 
+    *   **Using a YAML config file (username is read from config):**
+        ```bash
+        python3 mkmassupdate.py --config config.yaml
+        ```
+
+## Config File Format
+
+A YAML configuration file can be used to set default values for all CLI options. CLI arguments always override equivalent config file values.
+
+**Example `config.yaml`:**
+
+```yaml
+username: admin
+password: my_secret_password
+threads: 10
+timeout: 30
+port: 8728
+ssl: false
+ip_list: list.txt
+start_line: 1
+update_check_attempts: 15
+update_check_delay: 2.0
+dry_run: false
+no_colors: false
+debug: false
+cloud_password: my_cloud_password
+upgrade_firmware: false
+custom_commands: commands.yaml
+```
+
+Keys are optional. Unknown keys are silently ignored. See `config.yaml.example` for a commented template.
+
 ## Custom Commands File Format
 
-Custom commands are now loaded from an external YAML file specified by the `--custom-commands` argument. The file should contain a list of command definitions. Each command can be a simple string (for commands without parameters) or an object with `command` and `params` keys.
+Custom commands are loaded from an external YAML file specified by the `--custom-commands` argument. The file should contain a list of command definitions. Each command can be a simple string (for commands without parameters) or an object with `command` and `params` keys.
 
 **Example `commands.yaml`:**
 
@@ -170,7 +208,7 @@ One entry per line. Supported formats:
 
 
 ## Screenshot
-![ScreenShot](./screenshot.png)
+![ScreenShot](./screenshot-v5.png)
 
 ## Disclaimer
 

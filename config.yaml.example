@@ -1,0 +1,21 @@
+# Example YAML configuration file for MikroTik Mass Updater.
+# All keys are optional. CLI arguments override these values.
+# Place sensitive values (password, cloud_password) only if you are
+# comfortable keeping them on disk in plain text.
+
+# username: admin
+# password: my_secret_password
+# threads: 10
+# timeout: 30
+# port: 8728
+# ssl: false
+# ip_list: list.txt
+# start_line: 1
+# update_check_attempts: 15
+# update_check_delay: 2.0
+# dry_run: false
+# no_colors: false
+# debug: false
+# cloud_password: my_cloud_password
+# upgrade_firmware: false
+# custom_commands: commands.yaml
