@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 ####################################################
-#  MikroTik Mass Updater v5.2.0
+#  MikroTik Mass Updater v5.2.1
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 #  Ported to Python and API by: Gabriel Rolland
@@ -263,8 +263,7 @@ def _execute_router_command(
             cmd, params = command_item
             response = execute_with_retry(api, cmd, params)
         else:
-            cmd = command_item
-            response = execute_with_retry(api, cmd)
+            response = execute_with_retry(api, command_item)
         return response
     except (TimeoutError, socket.error) as e:
         sanitized_item = _sanitize_command_item(command_item)
@@ -357,7 +356,12 @@ def _perform_cloud_backup(
     api: librouteros.Connection,
     cloud_password: str,
     entry_lines: list[str],
+    dry_run: bool = False,
 ) -> bool:
+    if dry_run:
+        entry_lines.append("  Cloud backup: Dry-run — would create and upload backup.\n")
+        return True
+
     # Sleep 3s to let slow cloud connections stabilize before querying existing backups
     time.sleep(3)
     existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
@@ -438,6 +442,7 @@ def _reboot_router(api: librouteros.Connection, entry_lines: list[str]) -> None:
 def _perform_firmware_upgrade(
     api: librouteros.Connection,
     entry_lines: list[str],
+    dry_run: bool = False,
 ) -> bool | None:
     routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
     if not routerboard_info:
@@ -457,6 +462,9 @@ def _perform_firmware_upgrade(
         return None
     else:
         entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
+        if dry_run:
+            entry_lines.append("  Firmware upgrade: Dry-run — skipping upgrade command.\n")
+            return None
         upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
         if upgrade_response is None:
             entry_lines.append("  Firmware upgrade: Failed.\n")
@@ -587,13 +595,13 @@ class MassUpdater:
 
             success = True
             if cloud_password:
-                backup_success = _perform_cloud_backup(api, cloud_password, entry_lines)
+                backup_success = _perform_cloud_backup(api, cloud_password, entry_lines, dry_run)
                 if not backup_success:
                     entry_lines.append("  Warning: Cloud backup failed. Proceeding with updates regardless.\n")
 
             firmware_upgraded = False
             if success and upgrade_firmware:
-                firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines)
+                firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines, dry_run)
                 if firmware_upgrade_status is False:
                     success = False
                 elif firmware_upgrade_status is True:
@@ -680,14 +688,13 @@ class MassUpdater:
                     self._success_count += 1
                 fail_count = self._processed_count - self._success_count
                 pbar.set_postfix(ok=self._success_count, fail=fail_count)
+                pbar.update(1)
 
             if not self.stop_event.is_set():
                 try:
                     self.q.task_done()
                 except ValueError:
                     logger.debug(f"ValueError on q.task_done() in {threading.current_thread().name}.")
-
-            pbar.update(1)
 
     def _start_workers(
         self,
@@ -719,10 +726,7 @@ class MassUpdater:
                 self.q.put(host_info)
 
     def _wait_for_completion(self) -> None:
-        while not self.q.empty() and not self.stop_event.is_set():
-            time.sleep(0.1)
-        if not self.stop_event.is_set():
-            self.q.join()
+        self.q.join()
 
     def _handle_interrupt(self) -> None:
         logger.warning("\nInterrupted by user. Shutting down gracefully...")
