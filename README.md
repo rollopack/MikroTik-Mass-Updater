@@ -213,3 +213,10 @@ One entry per line. Supported formats:
 ## Disclaimer
 
 This script is provided as-is, without warranty of any kind. Use it at your own risk. Always test thoroughly in a non-production environment before deploying to production devices.
+
+
+## License
+
+GNU General Public License v3.0
+
+Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
