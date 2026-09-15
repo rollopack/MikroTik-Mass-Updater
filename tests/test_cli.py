@@ -1,6 +1,4 @@
 import pytest
-import sys
-sys.path.insert(0, '/mnt/dropbox/Documenti/Mikrotik/MikroTik-Mass-Updater')
 
 import logging
 logging.disable(logging.CRITICAL)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 ####################################################
-#  MikroTik Mass Updater v5.2.2
+#  MikroTik Mass Updater
 #  Original Written by: Phillip Hutchison
 #  Revamped version by: Kevin Byrd
 # Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
@@ -39,6 +39,8 @@ import yaml
 from typing import Any
 from tqdm import tqdm
 from librouteros.query import Key
+
+VERSION = "5.3.0"
 
 log_lock = threading.Lock()
 
@@ -146,6 +148,7 @@ def execute_with_retry(
     params: dict[str, Any] | None = None,
     max_retries: int = 3,
     retry_delay: int = 5,
+    retry_messages: list[str] | None = None,
 ) -> list[dict[str, Any]] | None:
     last_exception: Exception | None = None
     for attempt in range(max_retries):
@@ -153,29 +156,37 @@ def execute_with_retry(
             if params is not None:
                 return list(api(command, **params))
             return list(api(command))
-        except (TimeoutError, socket.error, librouteros.exceptions.LibRouterosError) as e:
-            last_exception = e
-            logger.warning(f"Attempt {attempt + 1} failed: {e}")
-            if attempt < max_retries - 1:
-                time.sleep(retry_delay)
-                continue
-            if last_exception:
-                raise last_exception
         except librouteros.exceptions.TrapError as e:
-            cmd_str: Any = command[0] if isinstance(command, tuple) else command
-            is_cloud_command = isinstance(cmd_str, str) and 'cloud' in cmd_str
-
             msg = getattr(e, 'message', '') or str(e)
             msg_lower = msg.lower()
-            is_transient = any(term in msg_lower for term in ['connection', 'timeout', 'connect', 'resolve'])
-
-            if is_cloud_command and is_transient:
-                last_exception = e
-                logger.warning(f"Attempt {attempt + 1} failed for cloud command '{cmd_str}' due to transient TrapError: {e}")
-                if attempt < max_retries - 1:
-                    time.sleep(retry_delay)
-                    continue
-            raise e
+            is_transient = any(term in msg_lower for term in [
+                'connection', 'timeout', 'connect', 'resolve', 'system is busy'
+            ])
+            if not is_transient:
+                raise
+            last_exception = e
+            if retry_messages is not None:
+                retry_messages.append(
+                    f"  Retry {attempt + 1} failed: {e}\n"
+                )
+            else:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
+                continue
+            raise last_exception
+        except (TimeoutError, socket.error, librouteros.exceptions.LibRouterosError) as e:
+            last_exception = e
+            if retry_messages is not None:
+                retry_messages.append(
+                    f"  Retry {attempt + 1} failed: {e}\n"
+                )
+            else:
+                logger.warning(f"Attempt {attempt + 1} failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay * (2 ** attempt))
+                continue
+            raise last_exception
     return None
 
 
@@ -275,9 +286,9 @@ def _execute_router_command(
     try:
         if isinstance(command_item, tuple):
             cmd, params = command_item
-            response = execute_with_retry(api, cmd, params)
+            response = execute_with_retry(api, cmd, params, retry_messages=entry_lines)
         else:
-            response = execute_with_retry(api, command_item)
+            response = execute_with_retry(api, command_item, retry_messages=entry_lines)
         return response
     except (TimeoutError, socket.error) as e:
         sanitized_item = _sanitize_command_item(command_item)
@@ -354,7 +365,12 @@ def _check_and_process_updates(
                 time.sleep(2)
                 try:
                     update_package_path = api.path('system', 'package', 'update')
-                    execute_with_retry(update_package_path, 'install', max_retries=2)
+                    execute_with_retry(
+                        update_package_path,
+                        'install',
+                        max_retries=2,
+                        retry_messages=entry_lines,
+                    )
                     entry_lines.append("  Updates installed. Rebooting...\n")
                     return True
                 except Exception as e:
@@ -376,30 +392,60 @@ def _perform_cloud_backup(
         entry_lines.append("  Cloud backup: Dry-run — would create and upload backup.\n")
         return True
 
-    # Sleep 3s to let slow cloud connections stabilize before querying existing backups
+    # Let slow cloud connections stabilize before querying existing backups.
     time.sleep(3)
     existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
     if existing_backups is None:
         entry_lines.append("  Cloud backup: Failed to retrieve list of existing backups. Aborting.\n")
         return False
 
-    if existing_backups:
-        backup_ids = [backup['.id'] for backup in existing_backups if '.id' in backup]
-        if backup_ids:
-            all_removed_successfully = True
-            for backup_id in backup_ids:
-                remove_params = {'number': backup_id}
-                response_remove = _execute_router_command(api, ('/system/backup/cloud/remove-file', remove_params), entry_lines)
-                if response_remove is None:
-                    all_removed_successfully = False
-            if not all_removed_successfully:
-                return False
-
     upload_params: dict[str, str] = {
         'action': 'create-and-upload',
         'password': cloud_password
     }
-    response_upload = _execute_router_command(api, ('/system/backup/cloud/upload-file', upload_params), entry_lines)
+    replaced_existing_slot = False
+    initial_upload_lines: list[str] = []
+    response_upload = _execute_router_command(
+        api,
+        ('/system/backup/cloud/upload-file', upload_params),
+        initial_upload_lines,
+    )
+    if response_upload is None and any(
+        'all slots used' in line.lower()
+        for line in initial_upload_lines
+    ):
+        # RouterOS replaces a Cloud backup by its existing file name.
+        replace_name = next(
+            (
+                backup.get('name')
+                for backup in existing_backups
+                if isinstance(backup.get('name'), str) and backup['name']
+            ),
+            None,
+        )
+        if replace_name is None:
+            entry_lines.extend(initial_upload_lines)
+            entry_lines.append(
+                "  Cloud backup: All slots used, but cloud/print returned no backup name.\n"
+            )
+            return False
+
+        replace_params = dict(upload_params, replace=replace_name)
+        replacement_lines: list[str] = []
+        replaced_existing_slot = True
+        response_upload = _execute_router_command(
+            api,
+            ('/system/backup/cloud/upload-file', replace_params),
+            replacement_lines,
+        )
+        if response_upload is None:
+            entry_lines.extend(initial_upload_lines)
+            entry_lines.append(
+                f"  Cloud backup: All slots used; replacing backup {replace_name}.\n"
+            )
+            entry_lines.extend(replacement_lines)
+    elif response_upload is None:
+        entry_lines.extend(initial_upload_lines)
     if response_upload is None:
         entry_lines.append("  Cloud backup: Failed to create and upload new backup.\n")
         return False
@@ -408,15 +454,33 @@ def _perform_cloud_backup(
     time.sleep(2)
     latest_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
 
+    if not latest_backups:
+        entry_lines.append("  Cloud backup: Upload could not be verified.\n")
+        return False
+
+    latest_backup = latest_backups[0]
+    new_backup_id = latest_backup.get('.id')
     if latest_backups:
-        latest_backup = latest_backups[0]
         secret_key = latest_backup.get('secret-download-key')
         if secret_key:
             entry_lines.append(f"  Cloud backup: Secret Download Key: {secret_key}\n")
         else:
             entry_lines.append("  Cloud backup: Could not find secret-download-key for the latest backup.\n")
-    else:
-        entry_lines.append("  Cloud backup: Failed to retrieve backup details to get secret key.\n")
+    old_backup_ids = [] if replaced_existing_slot else [
+        backup['.id'] for backup in existing_backups
+        if '.id' in backup and backup['.id'] != new_backup_id
+    ]
+    for backup_id in old_backup_ids:
+        remove_params = {'number': backup_id}
+        response_remove = _execute_router_command(
+            api,
+            ('/system/backup/cloud/remove-file', remove_params),
+            entry_lines,
+        )
+        if response_remove is None:
+            entry_lines.append(
+                f"  Cloud backup: Could not remove old backup {backup_id}; keeping it.\n"
+            )
 
     return True
 
@@ -827,9 +891,9 @@ class MassUpdater:
                 pbar.close()
             self._cleanup_after_interrupt()
             self._join_threads()
-            if not file_not_found:
-                return self._print_summary()
-        return True
+        if file_not_found:
+            return True
+        return self._print_summary()
 
 
 def _apply_config_file(parser: argparse.ArgumentParser) -> None:
@@ -847,8 +911,29 @@ def _apply_config_file(parser: argparse.ArgumentParser) -> None:
     if not isinstance(cfg, dict):
         parser.error(f"Config file must contain a top-level mapping, got {type(cfg).__name__}")
 
-    valid_keys = {a.dest for a in parser._actions if hasattr(a, 'dest') and a.dest != 'help'}
-    filtered = {k: v for k, v in cfg.items() if k in valid_keys}
+    actions = {
+        action.dest: action
+        for action in parser._actions
+        if hasattr(action, 'dest') and action.dest != 'help'
+    }
+    filtered: dict[str, Any] = {}
+    for key, value in cfg.items():
+        action = actions.get(key)
+        if action is None:
+            continue
+        if isinstance(action, (argparse._StoreTrueAction, argparse._StoreFalseAction)):
+            if not isinstance(value, bool):
+                parser.error(f"Config value '{key}' must be boolean")
+            filtered[key] = value
+            continue
+        if action.type is None and not isinstance(value, str):
+            parser.error(f"Config value '{key}' must be a string")
+        if action.type is not None:
+            try:
+                action.type(str(value))
+            except (TypeError, ValueError, argparse.ArgumentTypeError) as e:
+                parser.error(f"Invalid config value for '{key}': {e}")
+        filtered[key] = value
     if filtered:
         parser.set_defaults(**filtered)
 
@@ -872,7 +957,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--ssl", action="store_true", help="Enable SSL for all connections")
     parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands.")
     parser.add_argument("--config", help="Path to a YAML configuration file. CLI arguments override config file values.")
-    parser.add_argument("--version", action="version", version="5.2.0")
+    parser.add_argument("--version", action="version", version=VERSION)
 
     _apply_config_file(parser)
     args = parser.parse_args()

@@ -1,6 +1,4 @@
 import pytest
-import sys
-sys.path.insert(0, '/mnt/dropbox/Documenti/Mikrotik/MikroTik-Mass-Updater')
 
 import logging
 logging.disable(logging.CRITICAL)
@@ -33,26 +31,29 @@ def _make_args(**overrides: bool | str | int | float | None) -> argparse.Namespa
 
 
 class TestMassUpdaterRun:
-    def test_run_returns_false_on_all_success(self, mocker):
-        mocker.patch.object(MassUpdater, '_load_ip_list', return_value=[])
-        mocker.patch.object(MassUpdater, '_print_summary', return_value=False)
+    def test_run_returns_false_on_all_success(self, monkeypatch):
+        monkeypatch.setattr(MassUpdater, '_load_ip_list', lambda self: [])
+        monkeypatch.setattr(MassUpdater, '_print_summary', lambda self: False)
 
         args = _make_args()
         updater = MassUpdater(args)
         result = updater.run()
         assert result is False
 
-    def test_run_returns_true_on_some_failures(self, mocker):
-        mocker.patch.object(MassUpdater, '_load_ip_list', return_value=[])
-        mocker.patch.object(MassUpdater, '_print_summary', return_value=True)
+    def test_run_returns_true_on_some_failures(self, monkeypatch):
+        monkeypatch.setattr(MassUpdater, '_load_ip_list', lambda self: [])
+        monkeypatch.setattr(MassUpdater, '_print_summary', lambda self: True)
 
         args = _make_args()
         updater = MassUpdater(args)
         result = updater.run()
         assert result is True
 
-    def test_run_returns_true_on_file_not_found(self, mocker):
-        mocker.patch.object(MassUpdater, '_load_ip_list', side_effect=FileNotFoundError)
+    def test_run_returns_true_on_file_not_found(self, monkeypatch):
+        def raise_file_not_found(self):
+            raise FileNotFoundError
+
+        monkeypatch.setattr(MassUpdater, '_load_ip_list', raise_file_not_found)
 
         args = _make_args()
         updater = MassUpdater(args)

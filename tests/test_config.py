@@ -1,8 +1,7 @@
 import pytest
-import sys
 import os
+import sys
 import tempfile
-sys.path.insert(0, '/mnt/dropbox/Documenti/Mikrotik/MikroTik-Mass-Updater')
 
 import logging
 logging.disable(logging.CRITICAL)
@@ -113,6 +112,33 @@ class TestConfigFile:
 
     def test_config_not_a_mapping(self, monkeypatch):
         config_path = _write_yaml("- list\n- of\n- items\n")
+        try:
+            monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path])
+            with pytest.raises(SystemExit):
+                _parse_args()
+        finally:
+            os.unlink(config_path)
+
+    def test_config_rejects_invalid_thread_count(self, monkeypatch):
+        config_path = _write_yaml("threads: 0\n")
+        try:
+            monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path])
+            with pytest.raises(SystemExit):
+                _parse_args()
+        finally:
+            os.unlink(config_path)
+
+    def test_config_rejects_invalid_boolean(self, monkeypatch):
+        config_path = _write_yaml("dry_run: 'false'\n")
+        try:
+            monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path])
+            with pytest.raises(SystemExit):
+                _parse_args()
+        finally:
+            os.unlink(config_path)
+
+    def test_config_rejects_non_string_path(self, monkeypatch):
+        config_path = _write_yaml("ip_list: 123\n")
         try:
             monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path])
             with pytest.raises(SystemExit):

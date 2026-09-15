@@ -20,6 +20,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
     *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`.
 *   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning. Error messages include the target IP:port.
+*   **Cloud Backup:** Creates and verifies the backup before cleaning up older entries. When RouterOS reports that the Cloud slot is full, an existing backup is replaced by name using the documented `replace` parameter. If no valid backup name is available, the operation stops without deleting files.
 *   **Update Logic:** Checks for and installs updates by default.
     *   `--dry-run` mode to simulate without actual installation (indicated in progress bar and summary).
     *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
@@ -52,6 +53,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
 *   The log file is created fresh each time the script is run with a timestamp.
 *   Default connection timeout is 5 seconds (change with `--timeout`). The effective minimum is clamped to 30 seconds.
+*   MikroTik Cloud provides one free backup slot per device. Cloud replacement requires the existing backup name returned by `/system/backup/cloud/print`.
 
 ## Options
 
