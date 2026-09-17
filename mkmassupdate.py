@@ -40,7 +40,7 @@ from typing import Any
 from tqdm import tqdm
 from librouteros.query import Key
 
-VERSION = "5.3.0"
+VERSION = "5.3.1"
 
 log_lock = threading.Lock()
 
@@ -572,6 +572,18 @@ def _positive_float(value: str) -> float:
     return n
 
 
+def _format_elapsed_time(seconds: float) -> str:
+    total_seconds = max(0.0, seconds)
+    hours, remainder = divmod(total_seconds, 3600)
+    minutes, remaining_seconds = divmod(remainder, 60)
+
+    if hours >= 1:
+        return f"{int(hours)}h {int(minutes):02d}m {remaining_seconds:04.1f}s"
+    if minutes >= 1:
+        return f"{int(minutes)}m {remaining_seconds:04.1f}s"
+    return f"{remaining_seconds:.1f}s"
+
+
 class MassUpdater:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
@@ -843,7 +855,7 @@ class MassUpdater:
             f" Total hosts processed : {total_hosts_processed}",
             f" Successful operations : {successful_ops}",
             f" Failed operations     : {failed_ops}",
-            f" Elapsed time          : {elapsed:.1f}s",
+            f" Elapsed time          : {_format_elapsed_time(elapsed)}",
             f"========================================",
         ]
 

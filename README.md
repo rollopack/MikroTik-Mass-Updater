@@ -210,7 +210,7 @@ One entry per line. Supported formats:
 
 
 ## Screenshot
-![ScreenShot](./screenshot-v5.png)
+![ScreenShot](./screenshot-v5.3.png)
 
 ## Disclaimer
 

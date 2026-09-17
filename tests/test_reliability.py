@@ -7,6 +7,7 @@ from mkmassupdate import (
     MassUpdater,
     _perform_cloud_backup,
     _execute_router_command,
+    _format_elapsed_time,
     VERSION,
 )
 
@@ -165,3 +166,12 @@ def test_run_does_not_return_from_finally(monkeypatch):
 
 def test_version_is_shared_by_cli_and_module():
     assert len(VERSION.split(".")) == 3
+
+
+def test_format_elapsed_time_keeps_seconds_for_short_jobs():
+    assert _format_elapsed_time(12.34) == "12.3s"
+
+
+def test_format_elapsed_time_formats_minutes_and_hours():
+    assert _format_elapsed_time(1384.9) == "23m 04.9s"
+    assert _format_elapsed_time(3723.4) == "1h 02m 03.4s"
