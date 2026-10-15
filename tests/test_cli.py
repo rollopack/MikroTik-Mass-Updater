@@ -4,7 +4,8 @@ import logging
 logging.disable(logging.CRITICAL)
 
 import argparse
-from mkmassupdate import _positive_int, _port_type, _positive_float
+import sys
+from mkmassupdate import _positive_int, _port_type, _positive_float, _parse_args
 
 
 class TestPositiveInt:
@@ -74,3 +75,18 @@ class TestPositiveFloat:
     def test_rejects_negative(self):
         with pytest.raises(argparse.ArgumentTypeError):
             _positive_float('-1.5')
+
+
+class TestSslPort:
+    def test_default_ssl_port(self, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass'])
+        assert _parse_args().ssl_port == 8729
+
+    def test_ssl_port_override(self, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--ssl-port', '8730'])
+        assert _parse_args().ssl_port == 8730
+
+    def test_rejects_invalid_ssl_port(self, monkeypatch):
+        monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--ssl-port', '99999'])
+        with pytest.raises(SystemExit):
+            _parse_args()

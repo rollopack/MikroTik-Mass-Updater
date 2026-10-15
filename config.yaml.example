@@ -8,6 +8,7 @@
 # threads: 10
 # timeout: 30
 # port: 8728
+# ssl_port: 8729
 # ssl: false
 # ip_list: list.txt
 # start_line: 1

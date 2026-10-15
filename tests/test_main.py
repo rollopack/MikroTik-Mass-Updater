@@ -15,6 +15,7 @@ def _make_args(**overrides: bool | str | int | float | None) -> argparse.Namespa
         'timeout': 5,
         'ip_list': 'list.txt',
         'port': 8728,
+        'ssl_port': 8729,
         'update_check_attempts': 15,
         'update_check_delay': 2.0,
         'no_colors': False,
@@ -59,3 +60,17 @@ class TestMassUpdaterRun:
         updater = MassUpdater(args)
         result = updater.run()
         assert result is True
+
+
+class TestPopulateQueueSslPort:
+    def test_ssl_host_uses_configured_ssl_port(self):
+        args = _make_args(port=8728, ssl_port=8730)
+        updater = MassUpdater(args)
+        updater._populate_queue(['10.0.0.1|SSL'])
+        assert updater.q.get() == ('10.0.0.1', 8730, None, None, True)
+
+    def test_plain_host_uses_configured_api_port(self):
+        args = _make_args(port=8728, ssl_port=8730)
+        updater = MassUpdater(args)
+        updater._populate_queue(['10.0.0.2'])
+        assert updater.q.get() == ('10.0.0.2', 8728, None, None, False)

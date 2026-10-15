@@ -72,11 +72,12 @@ class TestConfigFile:
             os.unlink(config_path)
 
     def test_config_types_preserved(self, monkeypatch):
-        config_path = _write_yaml("port: 8729\ntimeout: 30\nupdate_check_attempts: 20\nupdate_check_delay: 1.5\n")
+        config_path = _write_yaml("port: 8729\nssl_port: 8730\ntimeout: 30\nupdate_check_attempts: 20\nupdate_check_delay: 1.5\n")
         try:
             monkeypatch.setattr(sys, 'argv', ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path])
             args = _parse_args()
             assert args.port == 8729
+            assert args.ssl_port == 8730
             assert args.timeout == 30
             assert args.update_check_attempts == 20
             assert args.update_check_delay == 1.5

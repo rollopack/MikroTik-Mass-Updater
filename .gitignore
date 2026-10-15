@@ -11,13 +11,10 @@ demo_screenshots.py
 config.yaml
 
 # Log files
-backuplog.txt
-backuplog*
 log/
 
 # Device list files
 list.txt
-list_copy.txt
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

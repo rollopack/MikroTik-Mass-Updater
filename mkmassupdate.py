@@ -40,20 +40,18 @@ from typing import Any
 from tqdm import tqdm
 from librouteros.query import Key
 
-VERSION = "5.3.1"
+VERSION = "5.3.2"
 
 log_lock = threading.Lock()
 
 
 class Colors:
-    HEADER = '\033[95m'
     OKBLUE = '\033[94m'
     OKGREEN = '\033[92m'
     WARNING = '\033[93m'
     FAIL = '\033[91m'
     ENDC = '\033[0m'
     BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
 
 
 class ColoredFormatter(logging.Formatter):
@@ -87,8 +85,6 @@ class ColoredFormatter(logging.Formatter):
             }
 
         self.default_formatter = logging.Formatter(self.CONSOLE_FORMAT_WITH_LEVEL)
-        if not self.use_colors:
-             self.formatters[logging.INFO] = logging.Formatter(self.CONSOLE_FORMAT)
 
     def format(self, record: logging.LogRecord) -> str:
         message_content = record.getMessage()
@@ -150,6 +146,8 @@ def execute_with_retry(
     retry_delay: int = 5,
     retry_messages: list[str] | None = None,
 ) -> list[dict[str, Any]] | None:
+    if max_retries < 1:
+        raise ValueError("max_retries must be at least 1")
     last_exception: Exception | None = None
     for attempt in range(max_retries):
         try:
@@ -187,7 +185,7 @@ def execute_with_retry(
                 time.sleep(retry_delay * (2 ** attempt))
                 continue
             raise last_exception
-    return None
+    raise RuntimeError("execute_with_retry exhausted retries without returning or raising")
 
 
 def parse_host_line(
@@ -224,6 +222,12 @@ def parse_host_line(
         username = parts[1] if len(parts) > 1 else None
         password = parts[2] if len(parts) > 2 else None
 
+        if len(parts) > 3:
+            logger.warning(
+                f"IP list entry for {ip} has extra fields after the password; "
+                "they are ignored (passwords containing '|' are not supported)."
+            )
+
         return ip, port, username, password, use_ssl
     except ValueError as e:
         logger.warning(f"Skipping malformed line in IP list: '{stripped_line}'. Error: {e}")
@@ -244,14 +248,13 @@ def _connect_to_router(
     use_ssl = use_ssl or global_ssl
     username = custom_username or default_username
     password = custom_password or default_password
-    effective_timeout = max(30, timeout)
 
     connect_kwargs: dict[str, Any] = dict(
         host=IP,
         username=username,
         password=password,
         port=int(port),
-        timeout=effective_timeout
+        timeout=timeout
     )
 
     if use_ssl:
@@ -290,9 +293,6 @@ def _execute_router_command(
         else:
             response = execute_with_retry(api, command_item, retry_messages=entry_lines)
         return response
-    except (TimeoutError, socket.error) as e:
-        sanitized_item = _sanitize_command_item(command_item)
-        entry_lines.append(f"  Error executing command {sanitized_item}: TimeoutError after retries\n")
     except Exception as e:
         sanitized_item = _sanitize_command_item(command_item)
         entry_lines.append(f"  Error executing command {sanitized_item}: {type(e).__name__}: {e}\n")
@@ -460,12 +460,11 @@ def _perform_cloud_backup(
 
     latest_backup = latest_backups[0]
     new_backup_id = latest_backup.get('.id')
-    if latest_backups:
-        secret_key = latest_backup.get('secret-download-key')
-        if secret_key:
-            entry_lines.append(f"  Cloud backup: Secret Download Key: {secret_key}\n")
-        else:
-            entry_lines.append("  Cloud backup: Could not find secret-download-key for the latest backup.\n")
+    secret_key = latest_backup.get('secret-download-key')
+    if secret_key:
+        entry_lines.append(f"  Cloud backup: Secret Download Key: {secret_key}\n")
+    else:
+        entry_lines.append("  Cloud backup: Could not find secret-download-key for the latest backup.\n")
     old_backup_ids = [] if replaced_existing_slot else [
         backup['.id'] for backup in existing_backups
         if '.id' in backup and backup['.id'] != new_backup_id
@@ -597,21 +596,39 @@ class MassUpdater:
 
     def _load_custom_commands(self) -> list:
         custom_commands: list = []
-        if self.args.custom_commands:
-            try:
-                with open(self.args.custom_commands, 'r', encoding='utf-8') as f:
-                    loaded_commands = yaml.safe_load(f)
-                    if loaded_commands:
-                        for item in loaded_commands:
-                            if 'params' in item:
-                                custom_commands.append((item['command'], item['params']))
-                            else:
-                                custom_commands.append(item['command'])
-                logger.info(f"Loaded {len(custom_commands)} custom commands from {self.args.custom_commands}")
-            except FileNotFoundError:
-                logger.error(f"Custom commands file not found: {self.args.custom_commands}")
-            except Exception as e:
-                logger.error(f"Error parsing custom commands file: {e}")
+        if not self.args.custom_commands:
+            return custom_commands
+
+        try:
+            with open(self.args.custom_commands, 'r', encoding='utf-8') as f:
+                loaded_commands = yaml.safe_load(f)
+        except FileNotFoundError:
+            logger.error(f"Custom commands file not found: {self.args.custom_commands}")
+            return custom_commands
+        except Exception as e:
+            logger.error(f"Error parsing custom commands file: {e}")
+            return custom_commands
+
+        if loaded_commands is None:
+            return custom_commands
+        if not isinstance(loaded_commands, list):
+            logger.error(
+                f"Custom commands file must contain a list, got {type(loaded_commands).__name__}"
+            )
+            return custom_commands
+
+        for item in loaded_commands:
+            if isinstance(item, str):
+                custom_commands.append(item)
+            elif isinstance(item, dict) and isinstance(item.get('command'), str):
+                if 'params' in item:
+                    custom_commands.append((item['command'], item['params']))
+                else:
+                    custom_commands.append(item['command'])
+            else:
+                logger.warning(f"Skipping malformed custom command entry: {item!r}")
+
+        logger.info(f"Loaded {len(custom_commands)} custom commands from {self.args.custom_commands}")
         return custom_commands
 
     def _load_ip_list(self) -> list[str]:
@@ -634,11 +651,7 @@ class MassUpdater:
             '/system/resource/print': _process_resource,
         }
 
-        all_commands_to_process: list = [
-            '/system/identity/print',
-            '/system/routerboard/print',
-            '/system/resource/print',
-        ] + custom_commands
+        all_commands_to_process: list = list(default_commands_map) + custom_commands
 
         command_execution_successful = True
         for command_item in all_commands_to_process:
@@ -690,7 +703,7 @@ class MassUpdater:
                     entry_lines.append("  Warning: Cloud backup failed. Proceeding with updates regardless.\n")
 
             firmware_upgraded = False
-            if success and upgrade_firmware:
+            if upgrade_firmware:
                 firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines, dry_run)
                 if firmware_upgrade_status is False:
                     success = False
@@ -811,7 +824,7 @@ class MassUpdater:
             if self.stop_event.is_set():
                 logger.warning("Interruption detected, stopping queue population.")
                 break
-            host_info = parse_host_line(line_content, self.args.port)
+            host_info = parse_host_line(line_content, self.args.port, self.args.ssl_port)
             if host_info:
                 self.q.put(host_info)
 
@@ -834,8 +847,7 @@ class MassUpdater:
 
     def _join_threads(self) -> None:
         for t in self.threads:
-            while t.is_alive():
-                t.join(timeout=1)
+            t.join()
 
     def _print_summary(self) -> bool:
         total_hosts_processed = len(self.aggregated_results)
@@ -874,7 +886,6 @@ class MassUpdater:
     def run(self) -> bool:
         custom_commands = self._load_custom_commands()
         pbar: tqdm[Any] | None = None
-        file_not_found = False
         self._start_time = time.time()
 
         try:
@@ -884,7 +895,6 @@ class MassUpdater:
                 lines = self._load_ip_list()
             except FileNotFoundError:
                 logger.error(f"IP list file not found: {self.args.ip_list}")
-                file_not_found = True
                 return True
 
             total_hosts = len(lines)
@@ -903,8 +913,6 @@ class MassUpdater:
                 pbar.close()
             self._cleanup_after_interrupt()
             self._join_threads()
-        if file_not_found:
-            return True
         return self._print_summary()
 
 
@@ -955,9 +963,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("-u", "--username", help="API username")
     parser.add_argument("-p", "--password", help="API password. If not provided, it will be asked for securely.")
     parser.add_argument("-t", "--threads", type=_positive_int, default=5, help="Number of threads to use (min: 1)")
-    parser.add_argument("--timeout", type=_positive_int, default=5, help="Connection timeout in seconds (min: 1, effectively clamped to 30)")
+    parser.add_argument("--timeout", type=_positive_int, default=5, help="Connection timeout in seconds (min: 1)")
     parser.add_argument("--ip-list", default='list.txt', help="Path to the IP list file.")
     parser.add_argument("--port", type=_port_type, default=8728, help="Default API port (1-65535).")
+    parser.add_argument("--ssl-port", type=_port_type, default=8729, help="Default API-SSL port used for hosts marked with |SSL when no port is given (1-65535).")
     parser.add_argument("--update-check-attempts", type=_positive_int, default=15, help="Number of attempts to check update status (min: 1).")
     parser.add_argument("--update-check-delay", type=_positive_float, default=2.0, help="Delay in seconds between update status checks (must be positive).")
     parser.add_argument("--no-colors", action="store_true", help="Disable colored output")
@@ -988,7 +997,7 @@ def main() -> None:
             args.password = getpass.getpass(f"Enter password for user '{args.username}': ")
 
         if args.ssl and args.port == 8728:
-            args.port = 8729
+            args.port = args.ssl_port
 
         _setup_logger(not args.no_colors, args.debug)
 

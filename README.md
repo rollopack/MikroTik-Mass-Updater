@@ -18,7 +18,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   **Flexible Host Configuration:**
     *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
     *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
-    *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`.
+    *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`. The default API-SSL port for `|SSL` hosts is configurable via `--ssl-port`.
 *   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning. Error messages include the target IP:port.
 *   **Cloud Backup:** Creates and verifies the backup before cleaning up older entries. When RouterOS reports that the Cloud slot is full, an existing backup is replaced by name using the documented `replace` parameter. If no valid backup name is available, the operation stops without deleting files.
 *   **Update Logic:** Checks for and installs updates by default.
@@ -32,7 +32,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 ## Requirements
 
-*   **Python 3.6 or later**
+*   **Python 3.7 or later**
 *   **`librouteros` library:** (Tested with v3.4.1, other versions might work)
 *   **`tqdm` library:** For the progress bar.
 *   **`pyyaml` library:** For loading custom commands and configuration from YAML files.
@@ -52,8 +52,9 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 
 *   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
 *   The log file is created fresh each time the script is run with a timestamp.
-*   Default connection timeout is 5 seconds (change with `--timeout`). The effective minimum is clamped to 30 seconds.
+*   Default connection timeout is 5 seconds (change with `--timeout`).
 *   MikroTik Cloud provides one free backup slot per device. Cloud replacement requires the existing backup name returned by `/system/backup/cloud/print`.
+*   Firmware-triggered reboots use a persistent RouterOS script named `mkmassupdate_reboot`. It is created on the device the first time and reused on later runs; it is intentionally left in place because the router reboots while the script is running.
 
 ## Options
 
@@ -63,6 +64,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--timeout TIMEOUT`: Connection timeout in seconds for API communication. Default: `5`.
 *   `--ip-list FILE_PATH`: Path to the IP list file. Default: `list.txt`.
 *   `--port API_PORT`: Default API port if not specified in the IP list file. Default: `8728`.
+*   `--ssl-port SSL_PORT`: Default API-SSL port used for hosts marked with `|SSL` when no explicit port is given. Default: `8729`.
 *   `--update-check-attempts ATTEMPTS`: Number of attempts to check update status. Default: `15`.
 *   `--update-check-delay DELAY`: Delay (seconds) between update status checks. Default: `2.0`.
 *   `--no-colors`: Disables colored output on the console.
@@ -138,6 +140,7 @@ password: my_secret_password
 threads: 10
 timeout: 30
 port: 8728
+ssl_port: 8729
 ssl: false
 ip_list: list.txt
 start_line: 1
@@ -161,7 +164,8 @@ Custom commands are loaded from an external YAML file specified by the `--custom
 
 ```yaml
 # Example of custom commands
-# Each item is a list containing [path, {parameter_dictionary}] or just [path]
+# Each entry can be a plain string (path only) or an object with
+# command and optional params keys.
 - command: /system/clock/print
 - command: /user/add
   params:
