@@ -145,6 +145,31 @@ def test_cloud_backup_does_not_send_invalid_replace_without_backup_name(monkeypa
     assert any("no backup name" in line.lower() for line in entry_lines)
 
 
+def test_cloud_backup_upload_succeeds_when_verification_reports_full_slots(monkeypatch):
+    api = FakeApi([
+        [],
+        [],
+        _trap("failure: Server error: All slots used. Delete file to free up space."),
+    ])
+    entry_lines = []
+    monkeypatch.setattr("mkmassupdate.time.sleep", lambda _: None)
+
+    outcome = _perform_cloud_backup(api, "cloud-password", entry_lines)
+
+    assert outcome
+    assert outcome.success is True
+    assert outcome.verified is False
+    assert [command for command, _ in api.calls] == [
+        "/system/backup/cloud/print",
+        "/system/backup/cloud/upload-file",
+        "/system/backup/cloud/print",
+    ]
+    assert any("uploaded" in line.lower() for line in entry_lines)
+    assert any("during verification" in line.lower() for line in entry_lines)
+    assert not any("backup failed" in line.lower() for line in entry_lines)
+    assert not any("Error executing command" in line for line in entry_lines)
+
+
 def test_run_does_not_return_from_finally(monkeypatch):
     args = argparse.Namespace(
         username="admin", password="test", threads=1, timeout=5,

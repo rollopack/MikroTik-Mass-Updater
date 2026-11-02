@@ -20,3 +20,17 @@
 # cloud_password: my_cloud_password
 # upgrade_firmware: false
 # custom_commands: commands.yaml
+
+# Read-only inventory: no backup, no updates, no firmware upgrade, no reboot.
+# inventory: false
+
+# Reports (HTML/CSV/state) are written for every run; disable with:
+# report: false
+
+# Process only these hosts (comma-separated). Matched against the host part
+# of each IP list entry, never against credentials.
+# only: "192.168.1.5,192.168.1.7"
+
+# Re-run only hosts that failed in a previous run. Use "latest" for the newest
+# state file under log/, or a path to a run directory or state.json file.
+# retry_failed: latest

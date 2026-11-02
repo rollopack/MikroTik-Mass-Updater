@@ -36,11 +36,34 @@ import sys
 import getpass
 import re
 import yaml
+from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any
 from tqdm import tqdm
 from librouteros.query import Key
 
-VERSION = "5.3.2"
+from mkreport import (
+    HostResult,
+    Summary,
+    build_summary,
+    failed_ips,
+    format_elapsed,
+    latest_state_path,
+    parse_identity_entry,
+    parse_resource_entry,
+    parse_routerboard_entry,
+    parse_update_entry,
+    read_state,
+    write_reports,
+)
+from mkreport import STATE_FILENAME
+
+VERSION = "5.4.0"
+
+BASE_LOG_DIR = "log"
+LOG_FILENAME = "mkmassupdate.log"
+REPORT_BASE_DIR = BASE_LOG_DIR
+
 
 log_lock = threading.Lock()
 
@@ -109,17 +132,42 @@ class NoEmptyMessagesFilter(logging.Filter):
         return bool(record.getMessage().strip())
 
 
-def _setup_logger(use_colors_arg: bool, debug_level: bool = False) -> logging.Logger:
+def _new_run_id() -> str:
+    return time.strftime('%Y-%m-%d-%H-%M-%S')
+
+
+def _create_run_dir(run_id: str, base_dir: str = BASE_LOG_DIR) -> Path:
+    """Create (or suffix) the per-run output directory."""
+    base = Path(base_dir)
+    base.mkdir(parents=True, exist_ok=True)
+    candidate = base / run_id
+    suffix = 2
+    while candidate.exists():
+        candidate = base / f"{run_id}-{suffix}"
+        suffix += 1
+    candidate.mkdir()
+    return candidate
+
+
+def _setup_logger(
+    use_colors_arg: bool,
+    debug_level: bool = False,
+    run_dir: Path | None = None,
+) -> logging.Logger:
     logger_instance = logging.getLogger("MKMikroTikUpdater")
     logger_instance.setLevel(logging.DEBUG if debug_level else logging.INFO)
     logger_instance.propagate = False
 
-    log_dir = 'log'
-    if not os.path.exists(log_dir):
-        os.makedirs(log_dir)
-
-    log_filename = f"mkmassupdate-{time.strftime('%Y-%m-%d-%H-%M-%S')}.log"
-    log_path = os.path.join(log_dir, log_filename)
+    if run_dir is None:
+        # Legacy flat layout, kept for helpers that only want a console log.
+        os.makedirs(BASE_LOG_DIR, exist_ok=True)
+        log_path = os.path.join(
+            BASE_LOG_DIR, f"mkmassupdate-{time.strftime('%Y-%m-%d-%H-%M-%S')}.log"
+        )
+    else:
+        run_dir = Path(run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+        log_path = str(run_dir / LOG_FILENAME)
 
     fh = logging.FileHandler(log_path, mode='w', encoding='utf-8')
     fh_formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(threadName)s - %(message)s')
@@ -299,27 +347,47 @@ def _execute_router_command(
     return None
 
 
-def _process_identity(response: list[dict[str, Any]], entry_lines: list[str]) -> None:
+def _process_identity(
+    response: list[dict[str, Any]], entry_lines: list[str]
+) -> dict[str, Any]:
+    data: dict[str, Any] = {}
     if response:
         for res in response:
-            identity = res.get('name', 'N/A')
-            entry_lines.append(f"  Identity: {identity}\n")
+            data = parse_identity_entry(res)
+            entry_lines.append(f"  Identity: {data['identity'] or 'N/A'}\n")
+    return data
 
 
-def _process_routerboard(response: list[dict[str, Any]], entry_lines: list[str]) -> None:
+def _process_routerboard(
+    response: list[dict[str, Any]], entry_lines: list[str]
+) -> dict[str, Any]:
+    data: dict[str, Any] = {}
     if response:
         for res in response:
-            model_name = res.get('board-name', res.get('model', 'N/A'))
-            entry_lines.append(f"  Model: {model_name}\n")
+            data = parse_routerboard_entry(res)
+            entry_lines.append(f"  Model: {data['model'] or 'N/A'}\n")
+    return data
 
 
-def _process_resource(response: list[dict[str, Any]], entry_lines: list[str]) -> None:
+def _process_resource(
+    response: list[dict[str, Any]], entry_lines: list[str]
+) -> dict[str, Any]:
+    data: dict[str, Any] = {}
     if response:
         for res in response:
-            version = res.get('version', 'N/A')
-            if 'stable' in res.get('build-time', ''):
-                version = f"{version} (stable)"
-            entry_lines.append(f"  Version: {version}\n")
+            data = parse_resource_entry(res)
+            entry_lines.append(f"  Version: {data['routeros_version'] or 'N/A'}\n")
+    return data
+
+
+@dataclass
+class UpdateOutcome:
+    ok: bool = False
+    reboot_required: bool = False
+    installed_version: str | None = None
+    latest_version: str | None = None
+    available: bool | None = None
+    status: str | None = None
 
 
 def _check_and_process_updates(
@@ -328,11 +396,13 @@ def _check_and_process_updates(
     dry_run: bool,
     check_attempts: int,
     check_delay: float,
-) -> bool:
+    allow_install: bool = True,
+) -> UpdateOutcome:
+    outcome = UpdateOutcome()
     entry_lines.append("  Checking for updates...\n")
     response = _execute_router_command(api, '/system/package/update/check-for-updates', entry_lines)
     if response is None:
-        return False
+        return outcome
 
     check_complete = False
     for _ in range(check_attempts):
@@ -345,22 +415,33 @@ def _check_and_process_updates(
                 check_complete = True
                 break
         else:
-            return False
+            return outcome
 
     if not check_complete:
         entry_lines.append("  Timeout waiting for update check to complete.\n")
-        return False
+        return outcome
 
     status_response = _execute_router_command(api, '/system/package/update/print', entry_lines)
     if not status_response:
-        return False
+        return outcome
 
+    outcome.ok = True
     for res in status_response:
-        installed_version = res.get('installed-version', '')
-        latest_version = res.get('latest-version', '')
+        parsed = parse_update_entry(res)
+        installed_version = parsed['installed_version'] or ''
+        latest_version = parsed['latest_version'] or ''
+        outcome.installed_version = parsed['installed_version']
+        outcome.latest_version = parsed['latest_version']
+        outcome.available = parsed['update_available']
+        outcome.status = parsed['status']
 
-        if latest_version and latest_version != installed_version:
+        if outcome.available:
             entry_lines.append(f"  Updates available: {installed_version} -> {latest_version}\n")
+            if not allow_install:
+                entry_lines.append(
+                    "  Update installation skipped because the firmware check failed.\n"
+                )
+                return outcome
             if not dry_run:
                 time.sleep(2)
                 try:
@@ -372,14 +453,74 @@ def _check_and_process_updates(
                         retry_messages=entry_lines,
                     )
                     entry_lines.append("  Updates installed. Rebooting...\n")
-                    return True
+                    outcome.reboot_required = True
+                    return outcome
                 except Exception as e:
                     entry_lines.append(f"  Error installing updates: {type(e).__name__}: {e}\n")
-                    return False
+                    outcome.ok = False
+                    return outcome
             else:
                 entry_lines.append("  Dry-run: Skipping installation of updates.\n")
 
-    return False
+    return outcome
+
+
+@dataclass
+class FirmwareOutcome:
+    status: bool | None = None
+    current: str | None = None
+    upgrade: str | None = None
+
+
+def _perform_firmware_upgrade(
+    api: librouteros.Connection,
+    entry_lines: list[str],
+    dry_run: bool = False,
+) -> FirmwareOutcome:
+    routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
+    if not routerboard_info:
+        entry_lines.append("  Firmware upgrade: Failed to retrieve routerboard information. Aborting.\n")
+        return FirmwareOutcome(False)
+
+    info = routerboard_info[0]
+    current_firmware = info.get('current-firmware')
+    upgrade_firmware = info.get('upgrade-firmware')
+    outcome = FirmwareOutcome(None, current_firmware, upgrade_firmware)
+
+    if not current_firmware or not upgrade_firmware:
+        entry_lines.append("  Firmware upgrade: Could not determine firmware versions. Aborting.\n")
+        outcome.status = False
+        return outcome
+
+    if current_firmware == upgrade_firmware:
+        entry_lines.append(f"  Firmware is up to date (current: {current_firmware}). No upgrade needed.\n")
+        outcome.status = None
+        return outcome
+
+    entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
+    if dry_run:
+        entry_lines.append("  Firmware upgrade: Dry-run — skipping upgrade command.\n")
+        outcome.status = None
+        return outcome
+    upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
+    if upgrade_response is None:
+        entry_lines.append("  Firmware upgrade: Failed.\n")
+        outcome.status = False
+        return outcome
+    entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
+    outcome.status = True
+    return outcome
+
+
+@dataclass
+class CloudBackupOutcome:
+    success: bool
+    secret_key: str | None = None
+    replaced_existing_slot: bool = False
+    verified: bool | None = None
+
+    def __bool__(self) -> bool:
+        return self.success
 
 
 def _perform_cloud_backup(
@@ -387,17 +528,17 @@ def _perform_cloud_backup(
     cloud_password: str,
     entry_lines: list[str],
     dry_run: bool = False,
-) -> bool:
+) -> CloudBackupOutcome:
     if dry_run:
         entry_lines.append("  Cloud backup: Dry-run — would create and upload backup.\n")
-        return True
+        return CloudBackupOutcome(True)
 
     # Let slow cloud connections stabilize before querying existing backups.
     time.sleep(3)
     existing_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
     if existing_backups is None:
         entry_lines.append("  Cloud backup: Failed to retrieve list of existing backups. Aborting.\n")
-        return False
+        return CloudBackupOutcome(False)
 
     upload_params: dict[str, str] = {
         'action': 'create-and-upload',
@@ -428,7 +569,7 @@ def _perform_cloud_backup(
             entry_lines.append(
                 "  Cloud backup: All slots used, but cloud/print returned no backup name.\n"
             )
-            return False
+            return CloudBackupOutcome(False)
 
         replace_params = dict(upload_params, replace=replace_name)
         replacement_lines: list[str] = []
@@ -448,15 +589,32 @@ def _perform_cloud_backup(
         entry_lines.extend(initial_upload_lines)
     if response_upload is None:
         entry_lines.append("  Cloud backup: Failed to create and upload new backup.\n")
-        return False
+        return CloudBackupOutcome(False)
 
     entry_lines.append("  Cloud backup: Successfully created and uploaded new backup.\n")
     time.sleep(2)
-    latest_backups = _execute_router_command(api, '/system/backup/cloud/print', entry_lines)
+    verification_lines: list[str] = []
+    latest_backups = _execute_router_command(
+        api, '/system/backup/cloud/print', verification_lines
+    )
 
     if not latest_backups:
-        entry_lines.append("  Cloud backup: Upload could not be verified.\n")
-        return False
+        slots_full = any("all slots used" in line.lower() for line in verification_lines)
+        if slots_full:
+            entry_lines.append(
+                "  Cloud backup: Upload was accepted, but RouterOS reported full slots "
+                "during verification. Existing backups were left untouched.\n"
+            )
+        else:
+            entry_lines.append(
+                "  Cloud backup: Upload was accepted, but verification failed. "
+                "Existing backups were left untouched.\n"
+            )
+        # RouterOS may accept the upload and then fail to list the cloud slot.
+        # Do not report a failed backup or delete any existing backup in that case.
+        return CloudBackupOutcome(
+            True, replaced_existing_slot=replaced_existing_slot, verified=False
+        )
 
     latest_backup = latest_backups[0]
     new_backup_id = latest_backup.get('.id')
@@ -481,7 +639,12 @@ def _perform_cloud_backup(
                 f"  Cloud backup: Could not remove old backup {backup_id}; keeping it.\n"
             )
 
-    return True
+    return CloudBackupOutcome(
+        True,
+        secret_key=secret_key,
+        replaced_existing_slot=replaced_existing_slot,
+        verified=True,
+    )
 
 
 def _reboot_router(api: librouteros.Connection, entry_lines: list[str]) -> None:
@@ -516,40 +679,6 @@ def _reboot_router(api: librouteros.Connection, entry_lines: list[str]) -> None:
         entry_lines.append(f"  An unexpected error occurred during the reboot process: {type(e).__name__}: {e}\n")
 
 
-def _perform_firmware_upgrade(
-    api: librouteros.Connection,
-    entry_lines: list[str],
-    dry_run: bool = False,
-) -> bool | None:
-    routerboard_info = _execute_router_command(api, '/system/routerboard/print', entry_lines)
-    if not routerboard_info:
-        entry_lines.append("  Firmware upgrade: Failed to retrieve routerboard information. Aborting.\n")
-        return False
-
-    info = routerboard_info[0]
-    current_firmware = info.get('current-firmware')
-    upgrade_firmware = info.get('upgrade-firmware')
-
-    if not current_firmware or not upgrade_firmware:
-        entry_lines.append("  Firmware upgrade: Could not determine firmware versions. Aborting.\n")
-        return False
-
-    if current_firmware == upgrade_firmware:
-        entry_lines.append(f"  Firmware is up to date (current: {current_firmware}). No upgrade needed.\n")
-        return None
-    else:
-        entry_lines.append(f"  Firmware upgrade available: {current_firmware} -> {upgrade_firmware}\n")
-        if dry_run:
-            entry_lines.append("  Firmware upgrade: Dry-run — skipping upgrade command.\n")
-            return None
-        upgrade_response = _execute_router_command(api, '/system/routerboard/upgrade', entry_lines)
-        if upgrade_response is None:
-            entry_lines.append("  Firmware upgrade: Failed.\n")
-            return False
-        entry_lines.append("  Firmware upgrade: Upgrade command sent.\n")
-        return True
-
-
 def _positive_int(value: str) -> int:
     n = int(value)
     if n < 1:
@@ -572,38 +701,79 @@ def _positive_float(value: str) -> float:
 
 
 def _format_elapsed_time(seconds: float) -> str:
-    total_seconds = max(0.0, seconds)
-    hours, remainder = divmod(total_seconds, 3600)
-    minutes, remaining_seconds = divmod(remainder, 60)
+    return format_elapsed(seconds)
 
-    if hours >= 1:
-        return f"{int(hours)}h {int(minutes):02d}m {remaining_seconds:04.1f}s"
-    if minutes >= 1:
-        return f"{int(minutes)}m {remaining_seconds:04.1f}s"
-    return f"{remaining_seconds:.1f}s"
+
+class RetryStateMissing(RuntimeError):
+    """Raised when --retry-failed cannot find a previous run state."""
+
+
+@dataclass
+class UpdaterConfig:
+    """Runtime options shared by the CLI and the worker threads."""
+
+    username: str = ""
+    password: str = ""
+    threads: int = 5
+    timeout: int = 5
+    ip_list: str = "list.txt"
+    port: int = 8728
+    ssl_port: int = 8729
+    update_check_attempts: int = 15
+    update_check_delay: float = 2.0
+    dry_run: bool = False
+    start_line: int = 1
+    cloud_password: str | None = None
+    upgrade_firmware: bool = False
+    ssl: bool = False
+    custom_commands: str | None = None
+    inventory: bool = False
+    only: str | None = None
+    retry_failed: str | None = None
+    report: bool = True
+
+    @classmethod
+    def from_args(cls, args: Any) -> UpdaterConfig:
+        values: dict[str, Any] = {}
+        for config_field in fields(cls):
+            value = getattr(args, config_field.name, None)
+            if value is not None:
+                values[config_field.name] = value
+        return cls(**values)
 
 
 class MassUpdater:
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        run_dir: Path | None = None,
+        log_base: str = BASE_LOG_DIR,
+        run_id: str | None = None,
+    ) -> None:
         self.args = args
+        self.config = UpdaterConfig.from_args(args)
         self.q: queue.Queue[tuple[str, int, str | None, str | None, bool]] = queue.Queue()
         self.threads: list[threading.Thread] = []
         self.stop_event: threading.Event = threading.Event()
-        self.aggregated_results: list[dict[str, Any]] = []
+        self.aggregated_results: list[HostResult] = []
         self._start_time: float = 0.0
         self._processed_count: int = 0
         self._success_count: int = 0
+        self.run_dir = Path(run_dir) if run_dir is not None else None
+        self.log_base = Path(log_base)
+        self.run_id = run_id or (self.run_dir.name if self.run_dir else _new_run_id())
+        self._report_paths: dict[str, Path] = {}
 
     def _load_custom_commands(self) -> list:
         custom_commands: list = []
-        if not self.args.custom_commands:
+        if not self.config.custom_commands:
             return custom_commands
 
         try:
-            with open(self.args.custom_commands, 'r', encoding='utf-8') as f:
+            with open(self.config.custom_commands, 'r', encoding='utf-8') as f:
                 loaded_commands = yaml.safe_load(f)
         except FileNotFoundError:
-            logger.error(f"Custom commands file not found: {self.args.custom_commands}")
+            logger.error(f"Custom commands file not found: {self.config.custom_commands}")
             return custom_commands
         except Exception as e:
             logger.error(f"Error parsing custom commands file: {e}")
@@ -628,22 +798,83 @@ class MassUpdater:
             else:
                 logger.warning(f"Skipping malformed custom command entry: {item!r}")
 
-        logger.info(f"Loaded {len(custom_commands)} custom commands from {self.args.custom_commands}")
+        logger.info(f"Loaded {len(custom_commands)} custom commands from {self.config.custom_commands}")
         return custom_commands
 
     def _load_ip_list(self) -> list[str]:
-        with open(self.args.ip_list, 'r', encoding='utf-8') as f:
+        with open(self.config.ip_list, 'r', encoding='utf-8') as f:
             lines = [
                 line for i, line in enumerate(f, 1)
-                if i >= self.args.start_line and line.strip() and not line.strip().startswith('#')
+                if i >= self.config.start_line and line.strip() and not line.strip().startswith('#')
             ]
-        return lines
+        return self._apply_host_filters(lines)
+
+    @staticmethod
+    def _line_ip(line: str) -> str:
+        """Extract the host part of an IP list line without touching credentials."""
+        return line.split('|', 1)[0].split(':', 1)[0].strip()
+
+    @staticmethod
+    def _parse_only(value: str | None) -> set[str] | None:
+        if not value:
+            return None
+        hosts = {item.strip() for item in value.split(',') if item.strip()}
+        return hosts or None
+
+    def _retry_ips(self) -> set[str] | None:
+        target = self.config.retry_failed
+        if not target:
+            return None
+
+        if target == 'latest':
+            state_path = latest_state_path(self.log_base)
+            if state_path is None:
+                raise RetryStateMissing(
+                    f"--retry-failed: no run state found under {self.log_base}/"
+                )
+        else:
+            candidate = Path(target)
+            state_path = candidate / STATE_FILENAME if candidate.is_dir() else candidate
+            if not state_path.is_file():
+                raise RetryStateMissing(f"--retry-failed: state file not found: {state_path}")
+
+        hosts = failed_ips(read_state(state_path))
+        if not hosts:
+            logger.info(f"--retry-failed: no failed hosts in {state_path}")
+        return hosts
+
+    def _apply_host_filters(self, lines: list[str]) -> list[str]:
+        only = self._parse_only(self.config.only)
+        retry = self._retry_ips()
+        if only is None and retry is None:
+            return lines
+
+        selected = []
+        for line in lines:
+            ip = self._line_ip(line)
+            if only is not None and ip not in only:
+                continue
+            if retry is not None and ip not in retry:
+                continue
+            selected.append(line)
+
+        if only is not None:
+            found = {self._line_ip(line) for line in selected}
+            missing = only - found
+            if missing:
+                logger.warning(
+                    f"--only: hosts not found in {self.config.ip_list}: "
+                    f"{', '.join(sorted(missing))}"
+                )
+        logger.info(f"Host selection: {len(selected)} of {len(lines)} entries selected.")
+        return selected
 
     def _run_commands_on_router(
         self,
         api: librouteros.Connection,
         custom_commands: list,
         entry_lines: list[str],
+        result: HostResult,
     ) -> bool:
         default_commands_map: dict[str, Any] = {
             '/system/identity/print': _process_identity,
@@ -651,7 +882,12 @@ class MassUpdater:
             '/system/resource/print': _process_resource,
         }
 
-        all_commands_to_process: list = list(default_commands_map) + custom_commands
+        if self.config.inventory:
+            all_commands_to_process: list = list(default_commands_map)
+            if custom_commands:
+                entry_lines.append("  Inventory mode: custom commands skipped.\n")
+        else:
+            all_commands_to_process = list(default_commands_map) + custom_commands
 
         command_execution_successful = True
         for command_item in all_commands_to_process:
@@ -662,7 +898,8 @@ class MassUpdater:
                 continue
 
             if command_path in default_commands_map:
-                default_commands_map[command_path](response, entry_lines)
+                parsed = default_commands_map[command_path](response, entry_lines)
+                result.apply(parsed)
             else:
                 entry_lines.append(f"  Response for {command_path}:\n")
                 for res_item in response:
@@ -674,68 +911,89 @@ class MassUpdater:
         self,
         host_info: tuple[str, int, str | None, str | None, bool],
         custom_commands: list,
-        cloud_password: str | None,
-        upgrade_firmware: bool,
-        dry_run: bool,
-        update_check_attempts: int,
-        update_check_delay: float,
-        timeout: int,
-        global_ssl: bool,
-        default_username: str,
-        default_password: str,
-    ) -> tuple[bool, list[str]]:
-        entry_lines: list[str] = []
-        IP, port, _, _, _ = host_info
-        entry_lines.append(f"\nHost: {IP}\n")
+    ) -> HostResult:
+        cfg = self.config
+        ip, port, _, _, host_ssl = host_info
+        result = HostResult(ip=ip, port=port, ssl=cfg.ssl or host_ssl)
+        entry_lines = result.log_lines
+        entry_lines.append(f"\nHost: {ip}\n")
+        started = time.time()
         api: librouteros.Connection | None = None
 
         try:
-            api = _connect_to_router(host_info, default_username, default_password, timeout, global_ssl)
+            api = _connect_to_router(host_info, cfg.username, cfg.password, cfg.timeout, cfg.ssl)
 
-            commands_ok = self._run_commands_on_router(api, custom_commands, entry_lines)
+            commands_ok = self._run_commands_on_router(api, custom_commands, entry_lines, result)
             if not commands_ok:
-                return False, entry_lines
+                result.error = "command execution failed"
+                return result
+
+            if cfg.inventory:
+                result.success = True
+                return result
 
             success = True
-            if cloud_password:
-                backup_success = _perform_cloud_backup(api, cloud_password, entry_lines, dry_run)
-                if not backup_success:
+            if cfg.cloud_password:
+                backup = _perform_cloud_backup(api, cfg.cloud_password, entry_lines, cfg.dry_run)
+                result.backup_ok = None if cfg.dry_run and backup else bool(backup)
+                result.backup_verified = backup.verified
+                result.cloud_backup_key = backup.secret_key
+                if not backup:
                     entry_lines.append("  Warning: Cloud backup failed. Proceeding with updates regardless.\n")
 
             firmware_upgraded = False
-            if upgrade_firmware:
-                firmware_upgrade_status = _perform_firmware_upgrade(api, entry_lines, dry_run)
-                if firmware_upgrade_status is False:
+            if cfg.upgrade_firmware:
+                firmware = _perform_firmware_upgrade(api, entry_lines, cfg.dry_run)
+                result.firmware_current = firmware.current or result.firmware_current
+                result.firmware_upgrade = firmware.upgrade or result.firmware_upgrade
+                if firmware.status is False:
                     success = False
-                elif firmware_upgrade_status is True:
+                    result.error = "firmware upgrade failed"
+                elif firmware.status is True:
                     firmware_upgraded = True
 
-            if success:
-                reboot_triggered = _check_and_process_updates(
-                    api, entry_lines, dry_run, update_check_attempts, update_check_delay
-                )
-                if not reboot_triggered and firmware_upgraded:
-                    _reboot_router(api, entry_lines)
+            update = _check_and_process_updates(
+                api, entry_lines, cfg.dry_run,
+                cfg.update_check_attempts, cfg.update_check_delay,
+                allow_install=success,
+            )
+            result.installed_version = update.installed_version
+            result.latest_version = update.latest_version
+            result.update_available = update.available
+            if success and not update.reboot_required and firmware_upgraded:
+                _reboot_router(api, entry_lines)
 
-            return success, entry_lines
+            result.success = success
+            return result
 
         except librouteros.exceptions.TrapError as e:
             msg = getattr(e, 'message', '') or str(e)
+            result.error = msg
             entry_lines.append(f"  Error: {msg}\n")
-            return False, entry_lines
+            result.success = False
+            return result
         except TimeoutError:
-            entry_lines.append(f"  Error: Connection timed out ({IP}:{port})\n")
-            return False, entry_lines
+            result.error = f"Connection timed out ({ip}:{port})"
+            entry_lines.append(f"  Error: Connection timed out ({ip}:{port})\n")
+            result.success = False
+            return result
         except socket.error as e:
-            entry_lines.append(f"  Error: Connection failed ({IP}:{port}) - {e.strerror or e}\n")
-            return False, entry_lines
+            reason = e.strerror or e
+            result.error = f"Connection failed ({ip}:{port}) - {reason}"
+            entry_lines.append(f"  Error: Connection failed ({ip}:{port}) - {reason}\n")
+            result.success = False
+            return result
         except Exception as e:
-            if IP:
-                 entry_lines.append(f"  Unexpected error processing host {IP}: {type(e).__name__}: {e}\n")
+            if ip:
+                entry_lines.append(f"  Unexpected error processing host {ip}: {type(e).__name__}: {e}\n")
             else:
-                 entry_lines.append(f"  Unexpected error: {type(e).__name__}: {e}\n")
-            return False, entry_lines
+                entry_lines.append(f"  Unexpected error: {type(e).__name__}: {e}\n")
+            result.error = f"{type(e).__name__}: {e}"
+            result.success = False
+            return result
         finally:
+            result.duration_s = time.time() - started
+            result.status = "ok" if result.success else "failed"
             if api:
                 try:
                     api.close()
@@ -744,17 +1002,8 @@ class MassUpdater:
 
     def _worker(
         self,
-        default_username: str,
-        default_password: str,
-        cloud_password: str | None,
-        timeout: int,
-        dry_run: bool,
-        update_check_attempts: int,
-        update_check_delay: float,
-        upgrade_firmware: bool,
         pbar: tqdm[Any],
         custom_commands: list,
-        global_ssl: bool,
     ) -> None:
         while not self.stop_event.is_set():
             try:
@@ -764,30 +1013,26 @@ class MassUpdater:
                     logger.debug(f"Worker {threading.current_thread().name} exiting due to stop_event.")
                 return
 
-            IP, _, _, _, _ = host_info
-
-            success, entry_lines = self._process_host(
-                host_info, custom_commands, cloud_password, upgrade_firmware,
-                dry_run, update_check_attempts, update_check_delay,
-                timeout, global_ssl, default_username, default_password,
-            )
-
+            result = self._process_host(host_info, custom_commands)
+            entry_lines = result.log_lines
             if not entry_lines:
-                entry_lines = [f"\nHost: {IP}\n  No operations performed or error before logging started.\n"]
+                entry_lines = [
+                    f"\nHost: {result.ip}\n  No operations performed or error before logging started.\n"
+                ]
 
             final_entry_text = "".join(entry_lines).strip()
 
             with log_lock:
                 if final_entry_text:
                     logger.info("─" * 50)
-                if success:
+                if result.success:
                     logger.info(final_entry_text)
                 else:
                     logger.error(final_entry_text)
 
-                self.aggregated_results.append({"IP": IP, "success": success})
+                self.aggregated_results.append(result)
                 self._processed_count += 1
-                if success:
+                if result.success:
                     self._success_count += 1
                 fail_count = self._processed_count - self._success_count
                 pbar.set_postfix(ok=self._success_count, fail=fail_count)
@@ -808,12 +1053,7 @@ class MassUpdater:
         for i in range(thread_count):
             t = threading.Thread(
                 target=self._worker,
-                args=(
-                    self.args.username, self.args.password, self.args.cloud_password,
-                    self.args.timeout, self.args.dry_run,
-                    self.args.update_check_attempts, self.args.update_check_delay,
-                    self.args.upgrade_firmware, pbar, custom_commands, self.args.ssl
-                ),
+                args=(pbar, custom_commands),
                 name=f"Worker-{i + 1}"
             )
             self.threads.append(t)
@@ -824,7 +1064,7 @@ class MassUpdater:
             if self.stop_event.is_set():
                 logger.warning("Interruption detected, stopping queue population.")
                 break
-            host_info = parse_host_line(line_content, self.args.port, self.args.ssl_port)
+            host_info = parse_host_line(line_content, self.config.port, self.config.ssl_port)
             if host_info:
                 self.q.put(host_info)
 
@@ -849,39 +1089,66 @@ class MassUpdater:
         for t in self.threads:
             t.join()
 
+    def _summary(self) -> Summary:
+        return build_summary(
+            self.aggregated_results,
+            time.time() - self._start_time,
+            dry_run=self.config.dry_run,
+            inventory=self.config.inventory,
+            script_version=VERSION,
+        )
+
+    def _write_reports(self) -> None:
+        if not self.config.report or self.run_dir is None:
+            return
+        try:
+            self._report_paths = write_reports(
+                self.run_dir, self.aggregated_results, self._summary(), self.run_id
+            )
+        except OSError as e:
+            logger.error(f"Could not write reports to {self.run_dir}: {e}")
+
+    def _finalize(self) -> bool:
+        self._write_reports()
+        return self._print_summary()
+
     def _print_summary(self) -> bool:
-        total_hosts_processed = len(self.aggregated_results)
-        successful_ops = sum(1 for res in self.aggregated_results if res["success"])
-        failed_ops = total_hosts_processed - successful_ops
-        failed_ips = [res["IP"] for res in self.aggregated_results if not res["success"]]
-        elapsed = time.time() - self._start_time
+        summary = self._summary()
+        failed_ips_list = [res.ip for res in self.aggregated_results if not res.success]
 
         title = "JOB SUMMARY"
-        if self.args.dry_run:
+        if self.config.dry_run:
             title = "JOB SUMMARY (DRY RUN)"
+        elif self.config.inventory:
+            title = "JOB SUMMARY (INVENTORY)"
 
         summary_lines = [
             f"\n\n========================================",
             f"             {title}                ",
             f"========================================",
-            f" Total hosts processed : {total_hosts_processed}",
-            f" Successful operations : {successful_ops}",
-            f" Failed operations     : {failed_ops}",
-            f" Elapsed time          : {_format_elapsed_time(elapsed)}",
+            f" Total hosts processed : {summary.total}",
+            f" Successful operations : {summary.ok}",
+            f" Failed operations     : {summary.failed}",
+            f" Elapsed time          : {summary.elapsed}",
             f"========================================",
         ]
 
         logger.info("\n".join(summary_lines))
 
-        if failed_ops > 0:
+        if summary.failed > 0:
             logger.info(" Failed IPs:")
-            for specific_ip in failed_ips:
+            for specific_ip in failed_ips_list:
                 if specific_ip != "Unknown (worker exited early)":
                     logger.error(f"  [FAIL] - {specific_ip}")
             logger.info("========================================")
+        if self._report_paths:
+            logger.info(" Reports:")
+            logger.info(f"  HTML  : {self._report_paths['html']}")
+            logger.info(f"  CSV   : {self._report_paths['csv']}")
+            logger.info(f"  State : {self._report_paths['state']}")
         logger.info("-- Job finished --")
         logging.shutdown()
-        return failed_ops > 0
+        return summary.failed > 0
 
     def run(self) -> bool:
         custom_commands = self._load_custom_commands()
@@ -894,15 +1161,18 @@ class MassUpdater:
             try:
                 lines = self._load_ip_list()
             except FileNotFoundError:
-                logger.error(f"IP list file not found: {self.args.ip_list}")
+                logger.error(f"IP list file not found: {self.config.ip_list}")
+                return True
+            except RetryStateMissing as e:
+                logger.error(str(e))
                 return True
 
             total_hosts = len(lines)
-            desc = "[DRY RUN] Processing hosts" if self.args.dry_run else "Processing hosts"
+            desc = "[DRY RUN] Processing hosts" if self.config.dry_run else "Processing hosts"
             pbar = tqdm(total=total_hosts, desc=desc, unit="host")
             pbar.set_postfix(ok=0, fail=0)
 
-            self._start_workers(self.args.threads, pbar, custom_commands)
+            self._start_workers(self.config.threads, pbar, custom_commands)
             self._populate_queue(lines)
             self._wait_for_completion()
 
@@ -913,7 +1183,7 @@ class MassUpdater:
                 pbar.close()
             self._cleanup_after_interrupt()
             self._join_threads()
-        return self._print_summary()
+        return self._finalize()
 
 
 def _apply_config_file(parser: argparse.ArgumentParser) -> None:
@@ -977,6 +1247,10 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
     parser.add_argument("--ssl", action="store_true", help="Enable SSL for all connections")
     parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands.")
+    parser.add_argument("--inventory", action="store_true", help="Read-only inventory: collect identity, model, firmware and versions without changing devices.")
+    parser.add_argument("--only", help="Comma-separated list of hosts to process; the other entries in the IP list are ignored.")
+    parser.add_argument("--retry-failed", nargs="?", const="latest", default=None, help="Re-run failed hosts unless a successful check confirmed RouterOS is already current (default: latest state in log/).")
+    parser.add_argument("--no-report", dest="report", action="store_false", help="Do not write HTML/CSV/state reports.")
     parser.add_argument("--config", help="Path to a YAML configuration file. CLI arguments override config file values.")
     parser.add_argument("--version", action="version", version=VERSION)
 
@@ -985,6 +1259,9 @@ def _parse_args() -> argparse.Namespace:
 
     if not args.username:
         parser.error("the following arguments are required: -u/--username")
+
+    if args.only is not None and not any(item.strip() for item in args.only.split(',')):
+        parser.error("--only requires at least one host")
 
     return args
 
@@ -999,9 +1276,11 @@ def main() -> None:
         if args.ssl and args.port == 8728:
             args.port = args.ssl_port
 
-        _setup_logger(not args.no_colors, args.debug)
+        run_id = _new_run_id()
+        run_dir = _create_run_dir(run_id, BASE_LOG_DIR)
+        _setup_logger(not args.no_colors, args.debug, run_dir)
 
-        updater = MassUpdater(args)
+        updater = MassUpdater(args, run_dir=run_dir, run_id=run_id)
         has_failures = updater.run()
         sys.exit(1 if has_failures else 0)
     except KeyboardInterrupt:

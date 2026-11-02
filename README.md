@@ -25,6 +25,9 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
     *   `--dry-run` mode to simulate without actual installation (indicated in progress bar and summary).
     *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
 *   **Custom Commands (External):** Supports execution of user-defined custom commands loaded from an external YAML file (`--custom-commands`).
+*   **Automatic Reports:** Every run writes a self-contained HTML report, a CSV export and a JSON state file in `log/<timestamp>/`, alongside `mkmassupdate.log`. Reports include model, serial number, RouterOS version, firmware versions and available updates.
+*   **Inventory Mode:** `--inventory` collects identity, model, serial, RouterOS version and firmware versions without changing anything on the devices.
+*   **Host Selection and Retry:** `--only` restricts a run to specific hosts; `--retry-failed` re-runs only the hosts that failed in a previous run.
 *   **Secure Password Input:** If the password is not provided via command-line or config file, the script will securely prompt for it.
 *   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly. A second Ctrl+C during shutdown is silently caught without traceback.
 *   **Start Line:** Option to start processing the IP list from a specific line number (`--start-line`).
@@ -51,7 +54,7 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 ## Notes
 
 *   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
-*   The log file is created fresh each time the script is run with a timestamp.
+*   Every run gets its own folder, `log/<timestamp>/`, containing the log and the reports. If two runs start in the same second, a `-2`, `-3` suffix is appended. Reports are skipped with `--no-report`.
 *   Default connection timeout is 5 seconds (change with `--timeout`).
 *   MikroTik Cloud provides one free backup slot per device. Cloud replacement requires the existing backup name returned by `/system/backup/cloud/print`.
 *   Firmware-triggered reboots use a persistent RouterOS script named `mkmassupdate_reboot`. It is created on the device the first time and reused on later runs; it is intentionally left in place because the router reboots while the script is running.
@@ -75,6 +78,10 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
 *   `--upgrade-firmware`: Perform firmware upgrade.
 *   `--ssl`: Enables SSL/TLS for all connections. When used, the default port switches to `8729` (API-SSL). SSL can also be enabled per-host by appending `|SSL` to entries in the IP list file.
 *   `--custom-commands FILE_PATH`: Path to a YAML file containing custom commands to execute on each router.
+*   `--inventory`: Read-only mode. Runs only `/system/identity/print`, `/system/routerboard/print`, `/system/resource/print`, then writes the reports. Cloud backup, custom commands, update checks, firmware upgrades and reboots are skipped.
+*   `--only HOST[,HOST...]`: Process only the listed hosts. Entries are matched against the host part of the IP list, so ports and credentials are never parsed from this option.
+*   `--retry-failed [latest|PATH]`: Re-run failed hosts unless a successful update check confirmed that RouterOS is already current. If the update state is unknown, the host remains retryable. With no argument it uses the newest `log/<timestamp>/state.json`; a directory or a `state.json` path may also be given. Hosts no longer present in the IP list are skipped.
+*   `--no-report`: Do not write the HTML/CSV/state files.
 *   `--config FILE_PATH`: Path to a YAML configuration file. CLI arguments override config file values.
 *   `--version`: Display version and exit.
 
@@ -128,6 +135,38 @@ This script builds on work already done by Phillip Hutchison and Kevin Byrd, por
         python3 mkmassupdate.py --config config.yaml
         ```
 
+    *   **Collect an inventory without changing anything on the devices:**
+        ```bash
+        python3 mkmassupdate.py -u admin --inventory
+        ```
+
+    *   **Process only specific hosts:**
+        ```bash
+        python3 mkmassupdate.py -u admin --only 192.168.1.5,192.168.1.7
+        ```
+
+    *   **Retry only the hosts that failed in the latest run:**
+        ```bash
+        python3 mkmassupdate.py -u admin --retry-failed
+        ```
+
+## Reports
+
+Each run writes the log plus three report files inside `log/<timestamp>/`:
+
+| File | Content |
+|---|---|
+| `mkmassupdate.log` | Full detailed log (same format as previous versions). |
+| `report.html` | Self-contained report: summary, sortable/filterable host table, and collapsed expandable details directly below each host row. No external resources, works offline. |
+| `report.csv` | One row per host, comma-separated, UTF-8 with BOM, suitable for Excel. |
+| `state.json` | Machine-readable run state used by `--retry-failed`. |
+
+The report includes IP, port, identity, model, serial number, RouterOS version, architecture, current/upgrade firmware, available update, cloud backup result, outcome, duration and error. Credentials and the cloud download key are masked; they are never written to the CSV or the JSON state.
+
+If RouterOS accepts a Cloud Backup upload but then reports `All slots used` while listing backups for verification, the run records the upload as accepted but unverified (`caricato, non verificato`). Existing backups are left untouched, and update processing continues.
+
+`--no-report` (or `report: false` in the config file) disables the HTML, CSV and state files, leaving only the log.
+
 ## Config File Format
 
 A YAML configuration file can be used to set default values for all CLI options. CLI arguments always override equivalent config file values.
@@ -152,6 +191,11 @@ debug: false
 cloud_password: my_cloud_password
 upgrade_firmware: false
 custom_commands: commands.yaml
+inventory: false
+report: true
+# Optional host filters
+# only: "192.168.1.5,192.168.1.7"
+# retry_failed: latest
 ```
 
 Keys are optional. Unknown keys are silently ignored. See `config.yaml.example` for a commented template.
