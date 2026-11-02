@@ -58,7 +58,7 @@ from mkreport import (
 )
 from mkreport import STATE_FILENAME
 
-VERSION = "5.4.0"
+VERSION = "6.0.0"
 
 BASE_LOG_DIR = "log"
 LOG_FILENAME = "mkmassupdate.log"
@@ -132,6 +132,18 @@ class NoEmptyMessagesFilter(logging.Filter):
         return bool(record.getMessage().strip())
 
 
+class _EventLogLines(list[str]):
+    """List-compatible host log that streams each appended line to the UI."""
+
+    def __init__(self, emit_line: Any) -> None:
+        super().__init__()
+        self._emit_line = emit_line
+
+    def append(self, line: str) -> None:
+        super().append(line)
+        self._emit_line(line)
+
+
 def _new_run_id() -> str:
     return time.strftime('%Y-%m-%d-%H-%M-%S')
 
@@ -153,6 +165,8 @@ def _setup_logger(
     use_colors_arg: bool,
     debug_level: bool = False,
     run_dir: Path | None = None,
+    *,
+    console: bool = True,
 ) -> logging.Logger:
     logger_instance = logging.getLogger("MKMikroTikUpdater")
     logger_instance.setLevel(logging.DEBUG if debug_level else logging.INFO)
@@ -175,10 +189,11 @@ def _setup_logger(
     fh.addFilter(NoEmptyMessagesFilter())
     logger_instance.addHandler(fh)
 
-    ch = TqdmLoggingHandler()
-    ch_formatter = ColoredFormatter(use_colors=use_colors_arg)
-    ch.setFormatter(ch_formatter)
-    logger_instance.addHandler(ch)
+    if console:
+        ch = TqdmLoggingHandler()
+        ch_formatter = ColoredFormatter(use_colors=use_colors_arg)
+        ch.setFormatter(ch_formatter)
+        logger_instance.addHandler(ch)
 
     return logger_instance
 
@@ -745,14 +760,16 @@ class UpdaterConfig:
 class MassUpdater:
     def __init__(
         self,
-        args: argparse.Namespace,
+        args: argparse.Namespace | UpdaterConfig,
         run_dir: Path | None = None,
         log_base: str = BASE_LOG_DIR,
         run_id: str | None = None,
+        event_queue: queue.Queue[dict[str, Any]] | None = None,
     ) -> None:
         self.args = args
-        self.config = UpdaterConfig.from_args(args)
+        self.config = args if isinstance(args, UpdaterConfig) else UpdaterConfig.from_args(args)
         self.q: queue.Queue[tuple[str, int, str | None, str | None, bool]] = queue.Queue()
+        self._queue_lock = threading.Lock()
         self.threads: list[threading.Thread] = []
         self.stop_event: threading.Event = threading.Event()
         self.aggregated_results: list[HostResult] = []
@@ -763,6 +780,41 @@ class MassUpdater:
         self.log_base = Path(log_base)
         self.run_id = run_id or (self.run_dir.name if self.run_dir else _new_run_id())
         self._report_paths: dict[str, Path] = {}
+        self.event_queue = event_queue
+        self._total_hosts = 0
+
+    def _emit_event(self, event_type: str, **payload: Any) -> None:
+        if self.event_queue is not None:
+            self.event_queue.put({"type": event_type, **payload})
+
+    @staticmethod
+    def _redact_log(text: str) -> str:
+        return re.sub(
+            r"(Secret Download Key:\s*)\S+",
+            r"\1[redacted]",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+    @staticmethod
+    def _host_event_data(result: HostResult) -> dict[str, Any]:
+        return {
+            field.name: getattr(result, field.name)
+            for field in fields(HostResult)
+            if field.name not in {"cloud_backup_key", "log_lines"}
+        }
+
+    def request_stop(self) -> None:
+        """Stop after in-flight hosts finish and discard hosts not yet started."""
+        with self._queue_lock:
+            self.stop_event.set()
+            while True:
+                try:
+                    self.q.get_nowait()
+                except queue.Empty:
+                    break
+                else:
+                    self.q.task_done()
 
     def _load_custom_commands(self) -> list:
         custom_commands: list = []
@@ -915,6 +967,16 @@ class MassUpdater:
         cfg = self.config
         ip, port, _, _, host_ssl = host_info
         result = HostResult(ip=ip, port=port, ssl=cfg.ssl or host_ssl)
+        if self.event_queue is not None:
+            worker_name = threading.current_thread().name
+            result.log_lines = _EventLogLines(
+                lambda line: self._emit_event(
+                    "log_line",
+                    ip=ip,
+                    worker=worker_name,
+                    message=self._redact_log(line.rstrip("\n")),
+                )
+            )
         entry_lines = result.log_lines
         entry_lines.append(f"\nHost: {ip}\n")
         started = time.time()
@@ -1013,6 +1075,12 @@ class MassUpdater:
                     logger.debug(f"Worker {threading.current_thread().name} exiting due to stop_event.")
                 return
 
+            if self.stop_event.is_set():
+                self.q.task_done()
+                return
+
+            worker_name = threading.current_thread().name
+            self._emit_event("host_started", ip=host_info[0], worker=worker_name)
             result = self._process_host(host_info, custom_commands)
             entry_lines = result.log_lines
             if not entry_lines:
@@ -1037,12 +1105,17 @@ class MassUpdater:
                 fail_count = self._processed_count - self._success_count
                 pbar.set_postfix(ok=self._success_count, fail=fail_count)
                 pbar.update(1)
-
-            if not self.stop_event.is_set():
-                try:
-                    self.q.task_done()
-                except ValueError:
-                    logger.debug(f"ValueError on q.task_done() in {threading.current_thread().name}.")
+                self._emit_event(
+                    "host_result", worker=worker_name, host=self._host_event_data(result)
+                )
+                self._emit_event(
+                    "progress",
+                    processed=self._processed_count,
+                    total=self._total_hosts,
+                    succeeded=self._success_count,
+                    failed=fail_count,
+                )
+            self.q.task_done()
 
     def _start_workers(
         self,
@@ -1061,12 +1134,13 @@ class MassUpdater:
 
     def _populate_queue(self, lines: list[str]) -> None:
         for line_content in lines:
-            if self.stop_event.is_set():
-                logger.warning("Interruption detected, stopping queue population.")
-                break
-            host_info = parse_host_line(line_content, self.config.port, self.config.ssl_port)
-            if host_info:
-                self.q.put(host_info)
+            with self._queue_lock:
+                if self.stop_event.is_set():
+                    logger.warning("Interruption detected, stopping queue population.")
+                    break
+                host_info = parse_host_line(line_content, self.config.port, self.config.ssl_port)
+                if host_info:
+                    self.q.put(host_info)
 
     def _wait_for_completion(self) -> None:
         self.q.join()
@@ -1078,12 +1152,7 @@ class MassUpdater:
     def _cleanup_after_interrupt(self) -> None:
         if self.stop_event.is_set():
             logger.warning("Clearing queue due to interruption...")
-            while not self.q.empty():
-                try:
-                    self.q.get_nowait()
-                    self.q.task_done()
-                except (queue.Empty, ValueError):
-                    break
+            self.request_stop()
 
     def _join_threads(self) -> None:
         for t in self.threads:
@@ -1155,26 +1224,37 @@ class MassUpdater:
         pbar: tqdm[Any] | None = None
         self._start_time = time.time()
 
+        should_finalize = True
+        run_error: str | None = None
         try:
             logger.info("-- Starting job --")
 
             try:
                 lines = self._load_ip_list()
             except FileNotFoundError:
-                logger.error(f"IP list file not found: {self.config.ip_list}")
-                return True
+                run_error = f"IP list file not found: {self.config.ip_list}"
+                logger.error(run_error)
+                should_finalize = False
             except RetryStateMissing as e:
-                logger.error(str(e))
-                return True
+                run_error = str(e)
+                logger.error(run_error)
+                should_finalize = False
+            else:
+                total_hosts = len(lines)
+                self._total_hosts = total_hosts
+                display_hosts = []
+                for line in lines:
+                    parsed = parse_host_line(line, self.config.port, self.config.ssl_port)
+                    if parsed:
+                        display_hosts.append({"ip": parsed[0], "port": parsed[1]})
+                self._emit_event("hosts_loaded", hosts=display_hosts, total=total_hosts)
+                desc = "[DRY RUN] Processing hosts" if self.config.dry_run else "Processing hosts"
+                pbar = tqdm(total=total_hosts, desc=desc, unit="host")
+                pbar.set_postfix(ok=0, fail=0)
 
-            total_hosts = len(lines)
-            desc = "[DRY RUN] Processing hosts" if self.config.dry_run else "Processing hosts"
-            pbar = tqdm(total=total_hosts, desc=desc, unit="host")
-            pbar.set_postfix(ok=0, fail=0)
-
-            self._start_workers(self.config.threads, pbar, custom_commands)
-            self._populate_queue(lines)
-            self._wait_for_completion()
+                self._start_workers(self.config.threads, pbar, custom_commands)
+                self._populate_queue(lines)
+                self._wait_for_completion()
 
         except KeyboardInterrupt:
             self._handle_interrupt()
@@ -1183,11 +1263,30 @@ class MassUpdater:
                 pbar.close()
             self._cleanup_after_interrupt()
             self._join_threads()
-        return self._finalize()
+        has_failures = self._finalize() if should_finalize else True
+        summary = self._summary()
+        self._emit_event(
+            "completed",
+            failed=has_failures,
+            cancelled=self.stop_event.is_set(),
+            summary={
+                "total": summary.total,
+                "ok": summary.ok,
+                "failed": summary.failed,
+                "elapsed_s": summary.elapsed_s,
+                "elapsed": summary.elapsed,
+            },
+            report_paths={key: str(value) for key, value in self._report_paths.items()},
+            error=run_error,
+        )
+        return has_failures
 
 
-def _apply_config_file(parser: argparse.ArgumentParser) -> None:
-    known, _ = parser.parse_known_args()
+def _apply_config_file(
+    parser: argparse.ArgumentParser,
+    argv: list[str] | None = None,
+) -> None:
+    known, _ = parser.parse_known_args(argv)
     if not known.config:
         return
     try:
@@ -1228,7 +1327,12 @@ def _apply_config_file(parser: argparse.ArgumentParser) -> None:
         parser.set_defaults(**filtered)
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(
+    argv: list[str] | None = None,
+    *,
+    require_username: bool = True,
+    defaults: dict[str, Any] | None = None,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="MikroTik Mass Updater")
     parser.add_argument("-u", "--username", help="API username")
     parser.add_argument("-p", "--password", help="API password. If not provided, it will be asked for securely.")
@@ -1254,10 +1358,12 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--config", help="Path to a YAML configuration file. CLI arguments override config file values.")
     parser.add_argument("--version", action="version", version=VERSION)
 
-    _apply_config_file(parser)
-    args = parser.parse_args()
+    if defaults:
+        parser.set_defaults(**defaults)
+    _apply_config_file(parser, argv)
+    args = parser.parse_args(argv)
 
-    if not args.username:
+    if require_username and not args.username:
         parser.error("the following arguments are required: -u/--username")
 
     if args.only is not None and not any(item.strip() for item in args.only.split(',')):

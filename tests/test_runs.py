@@ -1,7 +1,9 @@
 import argparse
 import json
 import logging
+import queue
 import sys
+import threading
 import time
 
 import pytest
@@ -87,6 +89,111 @@ class TestUpdaterConfig:
         assert config.inventory is True
         assert config.only == '10.0.0.1'
         assert config.report is False
+
+
+class TestUpdaterEventsAndCancellation:
+    def test_run_reports_startup_error_in_completion_event(self, tmp_path):
+        events = queue.Queue()
+        updater = MassUpdater(
+            _make_args(ip_list=str(tmp_path / 'missing-hosts.txt')),
+            event_queue=events,
+        )
+
+        assert updater.run() is True
+
+        completion = events.get_nowait()
+        assert completion['type'] == 'completed'
+        assert 'IP list file not found' in completion['error']
+
+    def test_run_emits_host_progress_and_completion_events(self, monkeypatch, tmp_path):
+        events = queue.Queue()
+        updater = MassUpdater(
+            _make_args(),
+            event_queue=events,
+        )
+        monkeypatch.setattr(updater, '_load_ip_list', lambda: ['10.0.0.1\n'])
+        monkeypatch.setattr(
+            updater,
+            '_process_host',
+            lambda host, commands: HostResult(
+                ip='10.0.0.1', port=8728, success=True, status='ok',
+                identity='edge-1', cloud_backup_key='sensitive-key',
+                log_lines=['Host: 10.0.0.1\n  Done\n'],
+            ),
+        )
+        monkeypatch.setattr(updater, '_finalize', lambda: False)
+
+        assert updater.run() is False
+
+        emitted = []
+        while not events.empty():
+            emitted.append(events.get_nowait())
+        event_types = [event['type'] for event in emitted]
+        host_event = next(event for event in emitted if event['type'] == 'host_result')
+        assert event_types == [
+            'hosts_loaded', 'host_started', 'host_result', 'progress', 'completed'
+        ]
+        assert host_event['host']['identity'] == 'edge-1'
+        assert 'cloud_backup_key' not in host_event['host']
+        assert emitted[-1]['summary']['total'] == 1
+
+    def test_host_log_lines_are_streamed_and_sensitive_key_is_redacted(self, monkeypatch):
+        events = queue.Queue()
+        api = RecordingApi({'/system/identity/print': [{'name': 'edge-1'}]})
+        _connected(monkeypatch, api)
+        updater = MassUpdater(_make_args(), event_queue=events)
+        updater._process_host(_host(), [])
+
+        emitted = []
+        while not events.empty():
+            emitted.append(events.get_nowait())
+        lines = [event for event in emitted if event['type'] == 'log_line']
+        assert any('Host: 10.0.0.1' in event['message'] for event in lines)
+        assert any('Identity: edge-1' in event['message'] for event in lines)
+        assert mkmassupdate.MassUpdater._redact_log(
+            'Secret Download Key: private-value'
+        ) == 'Secret Download Key: [redacted]'
+
+    def test_request_stop_discards_pending_hosts_and_joins_active_work(self, monkeypatch, tmp_path):
+        events = queue.Queue()
+        first_started = threading.Event()
+        queue_loaded = threading.Event()
+        finish_first = threading.Event()
+        ip_list = tmp_path / 'hosts.txt'
+        ip_list.write_text('10.0.0.1\n10.0.0.2\n10.0.0.3\n', encoding='utf-8')
+        updater = MassUpdater(
+            _make_args(ip_list=str(ip_list)), event_queue=events,
+        )
+        original_populate = updater._populate_queue
+
+        def populate_and_signal(lines):
+            original_populate(lines)
+            queue_loaded.set()
+
+        def process(host, commands):
+            first_started.set()
+            assert finish_first.wait(timeout=3)
+            return HostResult(ip=host[0], port=host[1], success=True, status='ok')
+
+        monkeypatch.setattr(updater, '_populate_queue', populate_and_signal)
+        monkeypatch.setattr(updater, '_process_host', process)
+        monkeypatch.setattr(updater, '_finalize', lambda: False)
+        run_thread = threading.Thread(target=updater.run)
+        run_thread.start()
+
+        assert first_started.wait(timeout=3)
+        assert queue_loaded.wait(timeout=3)
+        updater.request_stop()
+        finish_first.set()
+        run_thread.join(timeout=3)
+
+        assert not run_thread.is_alive()
+        assert [result.ip for result in updater.aggregated_results] == ['10.0.0.1']
+        assert updater.q.unfinished_tasks == 0
+        completed = [
+            event for event in list(events.queue) if event['type'] == 'completed'
+        ][0]
+        assert completed['cancelled'] is True
 
 
 class TestInventoryMode:

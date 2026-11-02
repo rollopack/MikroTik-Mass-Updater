@@ -1,181 +1,181 @@
+<a id="readme-top"></a>
+
 # MikroTik Mass Updater
-This is a Python script to send commands to multiple Mikrotik devices via the API. It provides concurrent operations, detailed logging (seamlessly integrated with the progress bar), a formatted job summary, and configurable settings.
 
-This script builds on work already done by Phillip Hutchison and Kevin Byrd, ported to Python and the Mikrotik API by Gabriel Rolland.
+Concurrent MikroTik RouterOS updates, firmware upgrades, Cloud Backup, inventory collection, and offline reports — through a command-line interface or a Tkinter desktop UI.
 
-**Key Features:**
+This project builds on work by Phillip Hutchison and Kevin Byrd, ported to Python and the MikroTik API by Gabriel Rolland.
 
-*   **MikroTik API:** Uses the `librouteros` library to interact with the Mikrotik API.
-*   **Concurrent Operation:** Employs threading to connect to multiple devices simultaneously. The number of threads is configurable (`--threads`).
-*   **Progress Bar:** Provides a visual progress bar (`tqdm`) with live counters (ok/fail).
-*   **Structured Logging:** Uses Python's standard `logging` module.
-    *   Detailed logs are saved to a file in the `log` directory. Each run of the script generates a new log file with a timestamp in its name. File logs include timestamps, log levels, and thread names.
-    *   Console output seamlessly integrates with the `tqdm` progress bar to prevent visual glitches, and includes optional color-coding for different log levels (`--no-colors` to disable).
-    *   Debug mode for more verbose logging (`--debug`).
-*   **Job Summary:** At the end of execution, a cleanly formatted visual summary is provided detailing total hosts processed, successful operations, failed operations (including a list of specific failed IPs), and elapsed time. Exit code is `0` for all-success, `1` if any failure occurred.
-*   **YAML Configuration File:** All CLI options can be specified via a YAML configuration file (`--config`). CLI arguments override config file values.
-*   **SSL/TLS Support:** Optional SSL connections via the MikroTik API-SSL service. Configurable per-host (`|SSL` flag in the IP list) or globally (`--ssl` flag). Certificate verification is disabled to support MikroTik's self-signed certificates.
-*   **Flexible Host Configuration:**
-    *   IP list sourced from a file (default: `list.txt`, configurable via `--ip-list`).
-    *   Supports `IP`, `IP:PORT`, `IP[:PORT]|USERNAME|PASSWORD`, and `IP[:PORT][|USERNAME|PASSWORD]|SSL` formats in the list file.
-    *   Default API port is 8728 (or 8729 when SSL is enabled), configurable via `--port`. The default API-SSL port for `|SSL` hosts is configurable via `--ssl-port`.
-*   **Error Handling:** Graceful handling of connection errors (`TimeoutError`, `socket.error`, `LibRouterosError`), API errors, and transient cloud backup issues, with intelligent retries for command execution. Malformed lines in the IP list are skipped with a warning. Error messages include the target IP:port.
-*   **Cloud Backup:** Creates and verifies the backup before cleaning up older entries. When RouterOS reports that the Cloud slot is full, an existing backup is replaced by name using the documented `replace` parameter. If no valid backup name is available, the operation stops without deleting files.
-*   **Update Logic:** Checks for and installs updates by default.
-    *   `--dry-run` mode to simulate without actual installation (indicated in progress bar and summary).
-    *   Configurable attempts and delay for update status checking (`--update-check-attempts`, `--update-check-delay`).
-*   **Custom Commands (External):** Supports execution of user-defined custom commands loaded from an external YAML file (`--custom-commands`).
-*   **Automatic Reports:** Every run writes a self-contained HTML report, a CSV export and a JSON state file in `log/<timestamp>/`, alongside `mkmassupdate.log`. Reports include model, serial number, RouterOS version, firmware versions and available updates.
-*   **Inventory Mode:** `--inventory` collects identity, model, serial, RouterOS version and firmware versions without changing anything on the devices.
-*   **Host Selection and Retry:** `--only` restricts a run to specific hosts; `--retry-failed` re-runs only the hosts that failed in a previous run.
-*   **Secure Password Input:** If the password is not provided via command-line or config file, the script will securely prompt for it.
-*   **Graceful Shutdown:** Handles `KeyboardInterrupt` (Ctrl+C) cleanly. A second Ctrl+C during shutdown is silently caught without traceback.
-*   **Start Line:** Option to start processing the IP list from a specific line number (`--start-line`).
-*   **Exit Codes:** `0` on complete success, `1` if any host failed or IP list file was not found.
+<p align="center">
+  <img src="./screenshot-v6-UI_2.png" alt="MikroTik Mass Updater v6 desktop interface" width="960">
+</p>
 
-## Requirements
+## Table of Contents
 
-*   **Python 3.7 or later**
-*   **`librouteros` library:** (Tested with v3.4.1, other versions might work)
-*   **`tqdm` library:** For the progress bar.
-*   **`pyyaml` library:** For loading custom commands and configuration from YAML files.
+- [About the Project](#about-the-project)
+  - [Features](#features)
+  - [Built With](#built-with)
+- [Getting Started](#getting-started)
+  - [Prerequisites](#prerequisites)
+  - [Installation](#installation)
+- [Usage](#usage)
+  - [CLI Screenshot](#cli-screenshot)
+- [CLI Options](#cli-options)
+- [Configuration](#configuration)
+- [Desktop UI Preferences](#desktop-ui-preferences)
+- [Reports](#reports)
+- [Custom Commands](#custom-commands)
+- [IP List Format](#ip-list-format)
+- [Operational Notes](#operational-notes)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License](#license)
+- [Contact](#contact)
+- [Acknowledgments](#acknowledgments)
 
-    ```bash
-    pip install librouteros tqdm pyyaml
-    ```
+## About the Project
 
-    or on Debian/Ubuntu (for `librouteros` only, `tqdm` and `pyyaml` usually need pip):
+MikroTik Mass Updater connects to multiple routers concurrently using the MikroTik API. It checks and installs RouterOS updates, can upgrade RouterBOARD firmware, creates Cloud Backups, and produces HTML, CSV, and JSON reports for each run.
 
-    ```bash
-    sudo apt install python3-librouteros
-    pip install tqdm pyyaml
-    ```
+Use the CLI for scripted or unattended jobs, or the desktop UI for interactive runs with live host status, logs, progress, retry controls, and report-folder access. The UI accepts the same command-line options and opens with those values prefilled.
 
-## Notes
+### Features
 
-*   API access (port 8728 by default, or 8729 for API-SSL) must be enabled on your Mikrotik devices. Use `--ssl` or the `|SSL` flag in the IP list for SSL connections.
-*   Every run gets its own folder, `log/<timestamp>/`, containing the log and the reports. If two runs start in the same second, a `-2`, `-3` suffix is appended. Reports are skipped with `--no-report`.
-*   Default connection timeout is 5 seconds (change with `--timeout`).
-*   MikroTik Cloud provides one free backup slot per device. Cloud replacement requires the existing backup name returned by `/system/backup/cloud/print`.
-*   Firmware-triggered reboots use a persistent RouterOS script named `mkmassupdate_reboot`. It is created on the device the first time and reused on later runs; it is intentionally left in place because the router reboots while the script is running.
+- Concurrent API operations with configurable worker count and connection timeout.
+- CLI progress bar, structured log files, and a per-run success/failure summary.
+- RouterOS updates, optional firmware upgrades, dry-run, and read-only inventory modes.
+- API-SSL globally or per host; certificate verification is disabled to support self-signed MikroTik certificates.
+- Cloud Backup upload and verification before old backups are cleaned up.
+- Custom RouterOS commands from YAML.
+- Host selection with `--only` and selective retry with `--retry-failed`.
+- Per-run log, self-contained HTML report, CSV export, and JSON state.
+- Graceful CLI interruption and cooperative desktop stop.
+- GUI settings persist without saving API or Cloud Backup passwords.
 
-## Options
+### Built With
 
-*   `-u USERNAME`, `--username USERNAME`: Specifies the API username. Can be provided via `--config` instead of CLI.
-*   `-p PASSWORD`, `--password PASSWORD`: Specifies the API password. If not provided, the script will securely prompt for it.
-*   `-t THREADS`, `--threads THREADS`: Number of concurrent threads to use. Default: `5`.
-*   `--timeout TIMEOUT`: Connection timeout in seconds for API communication. Default: `5`.
-*   `--ip-list FILE_PATH`: Path to the IP list file. Default: `list.txt`.
-*   `--port API_PORT`: Default API port if not specified in the IP list file. Default: `8728`.
-*   `--ssl-port SSL_PORT`: Default API-SSL port used for hosts marked with `|SSL` when no explicit port is given. Default: `8729`.
-*   `--update-check-attempts ATTEMPTS`: Number of attempts to check update status. Default: `15`.
-*   `--update-check-delay DELAY`: Delay (seconds) between update status checks. Default: `2.0`.
-*   `--no-colors`: Disables colored output on the console.
-*   `--dry-run`: Enables dry-run mode (simulates updates but doesn't install).
-*   `--start-line LINE_NUM`: Start from this line number in the IP list file (1-based). Default: `1`.
-*   `--debug`: Enables debug logging level for more verbose output.
-*   `--cloud-password PASSWORD`: Password for cloud backup. **(Required for performing cloud backup)**
-*   `--upgrade-firmware`: Perform firmware upgrade.
-*   `--ssl`: Enables SSL/TLS for all connections. When used, the default port switches to `8729` (API-SSL). SSL can also be enabled per-host by appending `|SSL` to entries in the IP list file.
-*   `--custom-commands FILE_PATH`: Path to a YAML file containing custom commands to execute on each router.
-*   `--inventory`: Read-only mode. Runs only `/system/identity/print`, `/system/routerboard/print`, `/system/resource/print`, then writes the reports. Cloud backup, custom commands, update checks, firmware upgrades and reboots are skipped.
-*   `--only HOST[,HOST...]`: Process only the listed hosts. Entries are matched against the host part of the IP list, so ports and credentials are never parsed from this option.
-*   `--retry-failed [latest|PATH]`: Re-run failed hosts unless a successful update check confirmed that RouterOS is already current. If the update state is unknown, the host remains retryable. With no argument it uses the newest `log/<timestamp>/state.json`; a directory or a `state.json` path may also be given. Hosts no longer present in the IP list are skipped.
-*   `--no-report`: Do not write the HTML/CSV/state files.
-*   `--config FILE_PATH`: Path to a YAML configuration file. CLI arguments override config file values.
-*   `--version`: Display version and exit.
+- Python and the standard library (`threading`, `argparse`, `tkinter`)
+- [`librouteros`](https://pypi.org/project/librouteros/)
+- [`tqdm`](https://pypi.org/project/tqdm/)
+- [`PyYAML`](https://pypi.org/project/PyYAML/)
+
+## Getting Started
+
+### Prerequisites
+
+- Python **3.7 or later**
+- MikroTik API access enabled on the target routers (port `8728` by default; API-SSL usually uses `8729`)
+- Tkinter for the desktop UI. It is included with most Windows Python installations; Debian/Ubuntu may require `python3-tk`.
+
+### Installation
+
+Install the Python dependencies:
+
+```bash
+python3 -m pip install librouteros tqdm pyyaml
+```
+
+On Debian/Ubuntu, system packages can be used for `librouteros` and Tkinter:
+
+```bash
+sudo apt install python3-librouteros python3-tk
+python3 -m pip install tqdm pyyaml
+```
+
+Prepare an IP list (`list.txt` by default). Optionally create a configuration file and a custom-commands file; templates are provided as `config.yaml.example` and `commands.yaml.example`.
 
 ## Usage
 
-1.  Download or clone `mkmassupdate.py`.
-2.  Install the required libraries (see "Requirements" section).
-3.  Prepare your IP list file (default `list.txt`).
-4.  (Optional) Create a `commands.yaml` file for custom commands (see "Custom Commands File Format" below).
-5.  (Optional) Create a `config.yaml` file to store common options (see "Config File Format" below).
-6.  Run the script with your credentials and desired options:
+### Command line
 
-    ```bash
-    python3 mkmassupdate.py -u your_username [OPTIONS]
-    ```
+Run the updater; if `--password` is omitted, it prompts securely:
 
-    **Examples:**
+```bash
+python3 mkmassupdate.py --username admin
+```
 
-    *   **Basic run (will prompt for password):**
-        ```bash
-        python3 mkmassupdate.py -u admin
-        ```
+Example dry run with a custom host list:
 
-    *   **Using a custom IP list and 20 threads with password provided:**
-        ```bash
-        python3 mkmassupdate.py -u admin -p pass123 --ip-list /path/to/my_routers.txt -t 20
-        ```
+```bash
+python3 mkmassupdate.py --username admin --ip-list routers.txt --threads 20 --dry-run
+```
 
-    *   **Dry run with increased timeout and debug logging, using custom commands:**
-        ```bash
-        python3 mkmassupdate.py -u admin --dry-run --timeout 30 --debug --custom-commands commands.yaml
-        ```
+Use a YAML configuration file or select a subset of hosts:
 
-    *   **Perform cloud backup with a specified password:**
-        ```bash
-        python3 mkmassupdate.py -u admin --cloud-password your_cloud_backup_password
-        ```
+```bash
+python3 mkmassupdate.py --config config.yaml
+python3 mkmassupdate.py --username admin --only 192.168.1.5,192.168.1.7
+```
 
-    *   **Perform firmware upgrade:**
-        ```bash
-        python3 mkmassupdate.py -u admin --upgrade-firmware
-        ```
+Retry failed hosts from the latest run:
 
-    *   **Connect using SSL for all routers:**
-        ```bash
-        python3 mkmassupdate.py -u admin --ssl
-        ```
+```bash
+python3 mkmassupdate.py --username admin --retry-failed
+```
 
-    *   **Using a YAML config file (username is read from config):**
-        ```bash
-        python3 mkmassupdate.py --config config.yaml
-        ```
+### CLI Screenshot
 
-    *   **Collect an inventory without changing anything on the devices:**
-        ```bash
-        python3 mkmassupdate.py -u admin --inventory
-        ```
+Example CLI output, including per-host status and the final job summary:
 
-    *   **Process only specific hosts:**
-        ```bash
-        python3 mkmassupdate.py -u admin --only 192.168.1.5,192.168.1.7
-        ```
+<p align="center">
+  <img src="./screenshot-v5.3.png" alt="MikroTik Mass Updater CLI output and job summary" width="511">
+</p>
 
-    *   **Retry only the hosts that failed in the latest run:**
-        ```bash
-        python3 mkmassupdate.py -u admin --retry-failed
-        ```
+### Desktop UI
 
-## Reports
+Launch the UI with saved preferences:
 
-Each run writes the log plus three report files inside `log/<timestamp>/`:
+```bash
+python3 mkgui.py
+```
 
-| File | Content |
+CLI arguments, configuration files, and the version/help actions are also available when launching the UI:
+
+```bash
+python3 mkgui.py --config config.yaml --dry-run
+python3 mkgui.py --help
+python3 mkgui.py --version
+```
+
+Precedence is **command-line options → YAML configuration → saved preferences → built-in defaults**. Runs that may modify devices require confirmation. `--no-colors` is accepted for CLI compatibility but has no visible effect in the UI.
+
+## CLI Options
+
+| Option | Description |
 |---|---|
-| `mkmassupdate.log` | Full detailed log (same format as previous versions). |
-| `report.html` | Self-contained report: summary, sortable/filterable host table, and collapsed expandable details directly below each host row. No external resources, works offline. |
-| `report.csv` | One row per host, comma-separated, UTF-8 with BOM, suitable for Excel. |
-| `state.json` | Machine-readable run state used by `--retry-failed`. |
+| `-u`, `--username USERNAME` | API username; may also be supplied in the configuration file. |
+| `-p`, `--password PASSWORD` | API password. If omitted in the CLI, the program prompts securely. |
+| `-t`, `--threads THREADS` | Number of concurrent workers. Default: `5`. |
+| `--timeout SECONDS` | API connection timeout. Default: `5`. |
+| `--ip-list PATH` | Host list file. Default: `list.txt`. |
+| `--port PORT` | Default API port. Default: `8728`. |
+| `--ssl-port PORT` | Default port for `|SSL` entries without an explicit port. Default: `8729`. |
+| `--update-check-attempts N` | Attempts to poll update status. Default: `15`. |
+| `--update-check-delay SECONDS` | Delay between update-status checks. Default: `2.0`. |
+| `--no-colors` | Disable colored CLI output. |
+| `--dry-run` | Simulate update actions without installing RouterOS or firmware updates. |
+| `--start-line N` | Start reading the host list at this 1-based line. Default: `1`. |
+| `--debug` | Enable verbose debug logging. |
+| `--cloud-password PASSWORD` | Password used for Cloud Backup. |
+| `--upgrade-firmware` | Attempt a RouterBOARD firmware upgrade. |
+| `--ssl` | Use API-SSL for all hosts; switches the default API port to `8729`. Per-host `|SSL` is also supported. |
+| `--custom-commands PATH` | YAML file of custom RouterOS commands. |
+| `--inventory` | Read-only collection of identity, model, serial, RouterOS, and firmware information. Skips updates, backups, custom commands, and reboots. |
+| `--only HOST[,HOST...]` | Process only matching host addresses from the IP list. |
+| `--retry-failed [latest\|PATH]` | Retry failed hosts from the latest run or a given state file/directory. Hosts confirmed current by a successful update check are skipped; uncertain update states remain retryable. |
+| `--no-report` | Skip HTML, CSV, and JSON report files. |
+| `--config PATH` | YAML configuration file. CLI options override its values. |
+| `--version` | Print the version and exit. |
 
-The report includes IP, port, identity, model, serial number, RouterOS version, architecture, current/upgrade firmware, available update, cloud backup result, outcome, duration and error. Credentials and the cloud download key are masked; they are never written to the CSV or the JSON state.
+The CLI exits with status `0` when all processed hosts succeed and `1` when a host fails or the IP list cannot be read.
 
-If RouterOS accepts a Cloud Backup upload but then reports `All slots used` while listing backups for verification, the run records the upload as accepted but unverified (`caricato, non verificato`). Existing backups are left untouched, and update processing continues.
+## Configuration
 
-`--no-report` (or `report: false` in the config file) disables the HTML, CSV and state files, leaving only the log.
-
-## Config File Format
-
-A YAML configuration file can be used to set default values for all CLI options. CLI arguments always override equivalent config file values.
-
-**Example `config.yaml`:**
+All keys are optional. CLI arguments override matching YAML values. See [`config.yaml.example`](./config.yaml.example) for the commented template.
 
 ```yaml
 username: admin
-password: my_secret_password
+password: replace_with_api_password
 threads: 10
 timeout: 30
 port: 8728
@@ -186,87 +186,105 @@ start_line: 1
 update_check_attempts: 15
 update_check_delay: 2.0
 dry_run: false
-no_colors: false
 debug: false
-cloud_password: my_cloud_password
+cloud_password: replace_with_cloud_password
 upgrade_firmware: false
 custom_commands: commands.yaml
 inventory: false
 report: true
-# Optional host filters
+# Optional host selection and retry:
 # only: "192.168.1.5,192.168.1.7"
 # retry_failed: latest
 ```
 
-Keys are optional. Unknown keys are silently ignored. See `config.yaml.example` for a commented template.
+Treat real passwords in configuration and host-list files as secrets. Keep them out of commits and do not use example values as production credentials.
 
-## Custom Commands File Format
+## Desktop UI Preferences
 
-Custom commands are loaded from an external YAML file specified by the `--custom-commands` argument. The file should contain a list of command definitions. Each command can be a simple string (for commands without parameters) or an object with `command` and `params` keys.
+The UI saves non-secret preferences atomically when a run starts and when the window closes:
 
-**Example `commands.yaml`:**
+- Linux: `~/.config/mikrotik-mass-updater/settings.json`, or `$XDG_CONFIG_HOME/mikrotik-mass-updater/settings.json` when configured.
+- Windows: `%APPDATA%/MikroTik Mass Updater/settings.json`.
+
+On POSIX, the settings file is created with mode `600`. The API username and ordinary preferences are remembered. API and Cloud Backup passwords are never saved. One-shot actions such as firmware upgrade, Cloud Backup, and retry-failed are not restored automatically.
+
+## Reports
+
+Each run creates a timestamped directory under `log/` containing `mkmassupdate.log` and, unless `--no-report` is used:
+
+| File | Contents |
+|---|---|
+| `report.html` | Self-contained offline report with a sortable/filterable host table and expandable details. |
+| `report.csv` | One row per host, UTF-8 with BOM for spreadsheet applications. |
+| `state.json` | Machine-readable state used by `--retry-failed`. |
+
+Reports include host, model, serial number, RouterOS and firmware versions, update status, Cloud Backup result, outcome, duration, and error. Credentials and Cloud Backup download keys are not written to CSV or JSON state.
+
+If RouterOS accepts a Cloud Backup upload but cannot list the Cloud slot during verification, the run records it as accepted but unverified. Existing backups are left untouched and update processing continues. Cloud replacement uses the existing backup name when RouterOS reports that all slots are occupied.
+
+## Custom Commands
+
+Pass a YAML file with `--custom-commands`. It contains a list of command paths or mappings with a command and optional parameters:
 
 ```yaml
-# Example of custom commands
-# Each entry can be a plain string (path only) or an object with
-# command and optional params keys.
 - command: /system/clock/print
 - command: /user/add
   params:
-    name: newuser
-    password: "secure_password_123"
+    name: example-user
+    password: replace_with_a_secure_password
     group: read
 - command: /ip/firewall/filter/print
   params:
-    "?chain": "input"
+    "?chain": input
 ```
 
-Note: Parameter names must match MikroTik API specifications.
+Parameter names must match the MikroTik API. See [`commands.yaml.example`](./commands.yaml.example).
 
-### IP List File Format (list.txt or custom)
+## IP List Format
 
-One entry per line. Supported formats:
+One host per line. Blank lines and lines beginning with `#` are ignored. Supported forms:
 
-*   **IP only** (uses default API port and script credentials)
-    ```
-    192.168.1.1
-    ```
+```text
+192.168.1.1
+192.168.1.2:8729
+192.168.1.3|customuser|custompassword
+192.168.1.4:8729|customuser|custompassword
+192.168.1.5|SSL
+192.168.1.6|admin|custompassword|SSL
+192.168.1.7:8730|admin|custompassword|SSL
+```
 
-*   **IP with custom port**
-    ```
-    192.168.1.2:8729
-    ```
+Passwords containing `|` are not supported. IPv6 addresses are not supported by the current list parser.
 
-*   **IP[:port] with custom credentials** (username|password)
-    ```
-    192.168.1.3|customuser|custompass
-    192.168.1.4:8729|customuser2|custompass2
-    ```
+## Operational Notes
 
-*   **IP with SSL** (auto-uses port 8729)
-    ```
-    192.168.1.5|SSL
-    ```
+- API access must be enabled on each router. API-SSL uses port `8729` by default; use `--ssl` or the per-host `|SSL` marker.
+- Each run writes to `log/<timestamp>/`. If two runs start in the same second, a numeric suffix is added. `--no-report` leaves only the log.
+- MikroTik Cloud provides one free backup slot. Replacing it requires the existing backup name returned by `/system/backup/cloud/print`.
+- Firmware-triggered reboots use the persistent RouterOS script `mkmassupdate_reboot`. It is intentionally left on the device because the router reboots while the script runs.
+- Connection and API errors are logged with the target host; malformed host-list lines are skipped with a warning.
 
-*   **IP[:port] with custom credentials and SSL**
-    ```
-    192.168.1.6|admin|password123|SSL
-    192.168.1.7:8730|admin|password123|SSL
-    ```
+## Contributing
 
-*   **Lines starting with # are comments. Empty lines are ignored.**
+Bug reports and focused improvements are welcome. Before opening a change, run the test suite:
 
-
-## Screenshot
-![ScreenShot](./screenshot-v5.3.png)
-
-## Disclaimer
-
-This script is provided as-is, without warranty of any kind. Use it at your own risk. Always test thoroughly in a non-production environment before deploying to production devices.
-
+```bash
+python3 -m pytest tests/ -v -p no:libtmux
+```
 
 ## License
 
-GNU General Public License v3.0
+Distributed under the GNU General Public License v3.0 or later. See [`LICENSE`](./LICENSE).
 
-Copyright (C) 2026 Rolland Gabriel (https://github.com/rollopack)
+Copyright © 2026 Rolland Gabriel.
+
+## Contact
+
+Maintainer: [Rolland Gabriel](https://github.com/rollopack).
+
+## Acknowledgments
+
+- Phillip Hutchison and Kevin Byrd for the original project work.
+- Gabriel Rolland for the Python port and ongoing maintenance.
+
+<p align="right"><a href="#readme-top">Back to top</a></p>
