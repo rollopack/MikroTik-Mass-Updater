@@ -58,7 +58,7 @@ from mkreport import (
 )
 from mkreport import STATE_FILENAME
 
-VERSION = "6.0.0"
+VERSION = "6.0.1"
 
 BASE_LOG_DIR = "log"
 LOG_FILENAME = "mkmassupdate.log"

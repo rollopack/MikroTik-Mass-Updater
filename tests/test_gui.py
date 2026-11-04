@@ -2,7 +2,7 @@ import pytest
 
 pytest.importorskip("tkinter")
 
-from mkgui import build_updater_config
+from mkgui import MikroTikUpdaterApp, build_updater_config
 
 
 def _values(**overrides):
@@ -66,6 +66,35 @@ def test_gui_config_maps_form_values_to_updater_contract():
     assert config.update_check_delay == 1.25
     assert config.start_line == 4
     assert config.report is True
+
+
+@pytest.mark.parametrize(
+    ('host', 'expected'),
+    [
+        (
+            {
+                'installed_version': '7.25',
+                'latest_version': '7.25.1',
+                'update_available': True,
+            },
+            '7.25 → 7.25.1',
+        ),
+        (
+            {
+                'installed_version': '7.25.1',
+                'latest_version': '7.25.1',
+                'update_available': False,
+            },
+            '7.25.1',
+        ),
+        (
+            {'routeros_version': '7.25'},
+            '7.25',
+        ),
+    ],
+)
+def test_routeros_label_shows_available_version_transition(host, expected):
+    assert MikroTikUpdaterApp._routeros_label(host) == expected
 
 
 @pytest.mark.parametrize(

@@ -7,7 +7,7 @@ Concurrent MikroTik RouterOS updates, firmware upgrades, Cloud Backup, inventory
 This project builds on work by Phillip Hutchison and Kevin Byrd, ported to Python and the MikroTik API by Gabriel Rolland.
 
 <p align="center">
-  <img src="./screenshot-v6-UI_2.png" alt="MikroTik Mass Updater v6 desktop interface" width="960">
+  <img src="./screenshots/screenshot-v6-UI_2.png" alt="MikroTik Mass Updater v6 desktop interface" width="960">
 </p>
 
 ## Table of Contents
@@ -118,7 +118,7 @@ python3 mkmassupdate.py --username admin --retry-failed
 Example CLI output, including per-host status and the final job summary:
 
 <p align="center">
-  <img src="./screenshot-v5.3.png" alt="MikroTik Mass Updater CLI output and job summary" width="511">
+  <img src="./screenshots/screenshot-v5.3.png" alt="MikroTik Mass Updater CLI output and job summary" width="511">
 </p>
 
 ### Desktop UI

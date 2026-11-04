@@ -99,9 +99,8 @@ class MikroTikUpdaterApp:
         ("ip", "Host", 145),
         ("identity", "Identity", 160),
         ("model", "Model", 155),
-        ("routeros", "RouterOS", 105),
+        ("routeros", "RouterOS", 130),
         ("firmware", "Firmware", 125),
-        ("update", "Update", 110),
         ("status", "Status", 100),
     )
 
@@ -549,12 +548,20 @@ class MikroTikUpdaterApp:
         record.update(
             identity=host.get("identity") or "—",
             model=host.get("model") or "—",
-            routeros=host.get("routeros_version") or host.get("installed_version") or "—",
+            routeros=self._routeros_label(host),
             firmware=self._firmware_label(host),
             update=self._update_label(host.get("update_available")),
             status=host.get("status", "failed"),
         )
         self._update_host_row(row)
+
+    @staticmethod
+    def _routeros_label(host: dict[str, Any]) -> str:
+        installed = host.get("installed_version") or host.get("routeros_version") or "—"
+        latest = host.get("latest_version")
+        if host.get("update_available") is True and latest and latest != installed:
+            return f"{installed} → {latest}"
+        return str(installed)
 
     @staticmethod
     def _firmware_label(host: dict[str, Any]) -> str:
