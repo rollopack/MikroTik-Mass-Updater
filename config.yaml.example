@@ -10,6 +10,13 @@
 # port: 8728
 # ssl_port: 8729
 # ssl: false
+# API-SSL certificate verification is enabled by default. Set false only when
+# a router's certificate cannot be trusted or matched to its host name.
+# ssl_verify: true
+# Optional CA bundle; when provided, it replaces system CA roots.
+# ssl_ca_file: routers-ca.pem
+# Enable only if an older router cannot negotiate the default cipher set.
+# ssl_legacy_ciphers: false
 # ip_list: list.txt
 # start_line: 1
 # update_check_attempts: 15

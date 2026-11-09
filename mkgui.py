@@ -62,6 +62,9 @@ def build_updater_config(values: dict[str, Any]) -> UpdaterConfig:
             raise ValueError("Cloud Backup password is required when Cloud Backup is enabled")
 
     ssl = bool(values.get("ssl", False))
+    ssl_verify = bool(values.get("ssl_verify", True))
+    ssl_ca_file = str(values.get("ssl_ca_file") or "").strip() or None
+    ssl_legacy_ciphers = bool(values.get("ssl_legacy_ciphers", False))
     ssl_port = port_value("ssl_port")
     port = port_value("port")
     if ssl and port == 8728:
@@ -86,6 +89,9 @@ def build_updater_config(values: dict[str, Any]) -> UpdaterConfig:
         cloud_password=cloud_password,
         upgrade_firmware=bool(values.get("upgrade_firmware", False)),
         ssl=ssl,
+        ssl_verify=ssl_verify,
+        ssl_ca_file=ssl_ca_file,
+        ssl_legacy_ciphers=ssl_legacy_ciphers,
         custom_commands=str(values.get("custom_commands", "")).strip() or None,
         inventory=bool(values.get("inventory", False)),
         only=only,
@@ -147,6 +153,9 @@ class MikroTikUpdaterApp:
         self.inventory = tk.BooleanVar(value=False)
         self.upgrade_firmware = tk.BooleanVar(value=False)
         self.ssl = tk.BooleanVar(value=False)
+        self.ssl_verify = tk.BooleanVar(value=True)
+        self.ssl_ca_file = tk.StringVar()
+        self.ssl_legacy_ciphers = tk.BooleanVar(value=False)
         self.cloud_backup = tk.BooleanVar(value=False)
         self.report = tk.BooleanVar(value=True)
         self.host_filter = tk.StringVar(value="All")
@@ -191,17 +200,33 @@ class MikroTikUpdaterApp:
         )
 
         flags = ttk.Frame(options)
-        flags.grid(row=7, column=0, columnspan=6, sticky="w", pady=(8, 0))
-        for text, variable in (
+        self._form_entry(options, 7, 0, "SSL CA bundle", self.ssl_ca_file)
+        ttk.Button(options, text="Browse…", command=self._choose_ssl_ca_file).grid(
+            row=7, column=2, padx=(6, 12), sticky="w"
+        )
+        ttk.Checkbutton(
+            options,
+            text="Allow legacy SSL ciphers (insecure)",
+            variable=self.ssl_legacy_ciphers,
+        ).grid(row=7, column=3, columnspan=3, sticky="w")
+
+        flags.grid(row=8, column=0, columnspan=6, sticky="w", pady=(8, 0))
+        for index, (text, variable) in enumerate((
             ("Dry run", self.dry_run),
             ("Read-only inventory", self.inventory),
             ("Upgrade firmware", self.upgrade_firmware),
             ("SSL for all hosts", self.ssl),
+            ("Verify SSL certificates (recommended)", self.ssl_verify),
             ("Cloud Backup", self.cloud_backup),
             ("Write reports", self.report),
             ("Debug logging", self.debug),
-        ):
-            ttk.Checkbutton(flags, text=text, variable=variable).pack(side="left", padx=(0, 12))
+        )):
+            ttk.Checkbutton(flags, text=text, variable=variable).grid(
+                row=index // 4,
+                column=index % 4,
+                sticky="w",
+                padx=(0, 16),
+            )
 
         toolbar = ttk.Frame(outer)
         toolbar.pack(fill="x", pady=(0, 6))
@@ -288,6 +313,17 @@ class MikroTikUpdaterApp:
         if path:
             self.custom_commands.set(path)
 
+    def _choose_ssl_ca_file(self) -> None:
+        path = filedialog.askopenfilename(
+            title="Select SSL CA bundle",
+            filetypes=(
+                ("Certificate files", "*.pem *.crt *.cer"),
+                ("All files", "*"),
+            ),
+        )
+        if path:
+            self.ssl_ca_file.set(path)
+
     def _choose_retry_state(self) -> None:
         path = filedialog.askopenfilename(
             title="Select previous run state",
@@ -301,7 +337,7 @@ class MikroTikUpdaterApp:
         for name in (
             "username", "password", "ip_list", "threads", "timeout", "port",
             "ssl_port", "update_check_attempts", "update_check_delay", "start_line",
-            "only", "custom_commands",
+            "only", "custom_commands", "ssl_ca_file",
         ):
             value = getattr(args, name, None)
             variable = getattr(self, name)
@@ -311,6 +347,8 @@ class MikroTikUpdaterApp:
         self.inventory.set(args.inventory)
         self.upgrade_firmware.set(args.upgrade_firmware)
         self.ssl.set(args.ssl)
+        self.ssl_verify.set(args.ssl_verify)
+        self.ssl_legacy_ciphers.set(args.ssl_legacy_ciphers)
         self.cloud_password.set(args.cloud_password or "")
         self.cloud_backup.set(bool(args.cloud_password))
         self.retry_failed.set(args.retry_failed or "")
@@ -333,6 +371,9 @@ class MikroTikUpdaterApp:
             "inventory": self.inventory.get(),
             "upgrade_firmware": self.upgrade_firmware.get(),
             "ssl": self.ssl.get(),
+            "ssl_verify": self.ssl_verify.get(),
+            "ssl_ca_file": self.ssl_ca_file.get(),
+            "ssl_legacy_ciphers": self.ssl_legacy_ciphers.get(),
             "cloud_backup": self.cloud_backup.get(),
             "cloud_password": self.cloud_password.get(),
             "custom_commands": self.custom_commands.get(),
@@ -349,7 +390,9 @@ class MikroTikUpdaterApp:
             for key in (
                 "username", "ip_list", "threads", "timeout", "port", "ssl_port",
                 "update_check_attempts", "update_check_delay", "start_line", "dry_run",
-                "inventory", "ssl", "custom_commands", "only", "report", "debug",
+                "inventory", "ssl", "ssl_verify", "ssl_ca_file",
+                "ssl_legacy_ciphers",
+                "custom_commands", "only", "report", "debug",
             )
         }
 

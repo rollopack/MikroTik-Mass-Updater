@@ -58,7 +58,7 @@ from mkreport import (
 )
 from mkreport import STATE_FILENAME
 
-VERSION = "6.0.1"
+VERSION = "6.1.0"
 
 BASE_LOG_DIR = "log"
 LOG_FILENAME = "mkmassupdate.log"
@@ -306,6 +306,9 @@ def _connect_to_router(
     default_password: str,
     timeout: int,
     global_ssl: bool = False,
+    ssl_verify: bool = True,
+    ssl_ca_file: str | None = None,
+    ssl_legacy_ciphers: bool = False,
 ) -> librouteros.Connection:
     IP, port, custom_username, custom_password, use_ssl = host_info
     use_ssl = use_ssl or global_ssl
@@ -321,11 +324,19 @@ def _connect_to_router(
     )
 
     if use_ssl:
-        ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-        ssl_context.check_hostname = False
-        ssl_context.verify_mode = ssl.CERT_NONE
-        ssl_context.set_ciphers('ALL:@SECLEVEL=0')
-        connect_kwargs['ssl_wrapper'] = ssl_context.wrap_socket
+        if ssl_verify:
+            ssl_context = ssl.create_default_context(cafile=ssl_ca_file)
+        else:
+            ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+        if ssl_legacy_ciphers:
+            ssl_context.set_ciphers('ALL:@SECLEVEL=0')
+
+        def ssl_wrapper(sock: socket.socket) -> ssl.SSLSocket:
+            return ssl_context.wrap_socket(sock, server_hostname=IP)
+
+        connect_kwargs['ssl_wrapper'] = ssl_wrapper
 
     return librouteros.connect(**connect_kwargs)
 
@@ -741,6 +752,9 @@ class UpdaterConfig:
     cloud_password: str | None = None
     upgrade_firmware: bool = False
     ssl: bool = False
+    ssl_verify: bool = True
+    ssl_ca_file: str | None = None
+    ssl_legacy_ciphers: bool = False
     custom_commands: str | None = None
     inventory: bool = False
     only: str | None = None
@@ -983,7 +997,16 @@ class MassUpdater:
         api: librouteros.Connection | None = None
 
         try:
-            api = _connect_to_router(host_info, cfg.username, cfg.password, cfg.timeout, cfg.ssl)
+            api = _connect_to_router(
+                host_info,
+                cfg.username,
+                cfg.password,
+                cfg.timeout,
+                cfg.ssl,
+                cfg.ssl_verify,
+                cfg.ssl_ca_file,
+                cfg.ssl_legacy_ciphers,
+            )
 
             commands_ok = self._run_commands_on_router(api, custom_commands, entry_lines, result)
             if not commands_ok:
@@ -1243,10 +1266,21 @@ class MassUpdater:
                 total_hosts = len(lines)
                 self._total_hosts = total_hosts
                 display_hosts = []
+                has_ssl_hosts = self.config.ssl
                 for line in lines:
                     parsed = parse_host_line(line, self.config.port, self.config.ssl_port)
                     if parsed:
                         display_hosts.append({"ip": parsed[0], "port": parsed[1]})
+                        has_ssl_hosts = has_ssl_hosts or parsed[4]
+                if has_ssl_hosts and not self.config.ssl_verify:
+                    logger.warning(
+                        "TLS certificate verification is disabled; router identity "
+                        "will not be checked."
+                    )
+                if has_ssl_hosts and self.config.ssl_legacy_ciphers:
+                    logger.warning(
+                        "Legacy TLS ciphers are enabled; connection security is reduced."
+                    )
                 self._emit_event("hosts_loaded", hosts=display_hosts, total=total_hosts)
                 desc = "[DRY RUN] Processing hosts" if self.config.dry_run else "Processing hosts"
                 pbar = tqdm(total=total_hosts, desc=desc, unit="host")
@@ -1350,6 +1384,29 @@ def _parse_args(
     parser.add_argument("--cloud-password", help="Password for cloud backup")
     parser.add_argument("--upgrade-firmware", action="store_true", help="Perform firmware upgrade")
     parser.add_argument("--ssl", action="store_true", help="Enable SSL for all connections")
+    ssl_verification = parser.add_mutually_exclusive_group()
+    ssl_verification.add_argument(
+        "--ssl-verify",
+        dest="ssl_verify",
+        action="store_true",
+        help="Verify API-SSL certificates and hostnames (default).",
+    )
+    ssl_verification.add_argument(
+        "--ssl-no-verify",
+        dest="ssl_verify",
+        action="store_false",
+        help="Disable API-SSL certificate and hostname verification.",
+    )
+    parser.set_defaults(ssl_verify=True)
+    parser.add_argument(
+        "--ssl-ca-file",
+        help="CA bundle used to verify API-SSL certificates; replaces system CA roots.",
+    )
+    parser.add_argument(
+        "--ssl-legacy-ciphers",
+        action="store_true",
+        help="Enable weak legacy API-SSL ciphers for old routers (insecure).",
+    )
     parser.add_argument("--custom-commands", help="Path to a YAML file with custom commands.")
     parser.add_argument("--inventory", action="store_true", help="Read-only inventory: collect identity, model, firmware and versions without changing devices.")
     parser.add_argument("--only", help="Comma-separated list of hosts to process; the other entries in the IP list are ignored.")

@@ -21,6 +21,9 @@ def _values(**overrides):
         'inventory': False,
         'upgrade_firmware': False,
         'ssl': False,
+        'ssl_verify': True,
+        'ssl_ca_file': '',
+        'ssl_legacy_ciphers': False,
         'cloud_backup': False,
         'cloud_password': '',
         'custom_commands': '',
@@ -39,6 +42,9 @@ def test_gui_config_maps_form_values_to_updater_contract():
             dry_run=True,
             inventory=True,
             ssl=True,
+            ssl_verify=False,
+            ssl_ca_file='routers-ca.pem',
+            ssl_legacy_ciphers=True,
             only='10.0.0.1, 10.0.0.2',
             retry_failed='/tmp/previous/state.json',
             custom_commands='commands.yaml',
@@ -56,6 +62,9 @@ def test_gui_config_maps_form_values_to_updater_contract():
     assert config.timeout == 12
     assert config.port == 8729
     assert config.ssl is True
+    assert config.ssl_verify is False
+    assert config.ssl_ca_file == 'routers-ca.pem'
+    assert config.ssl_legacy_ciphers is True
     assert config.dry_run is True
     assert config.inventory is True
     assert config.only == '10.0.0.1, 10.0.0.2'
@@ -66,6 +75,13 @@ def test_gui_config_maps_form_values_to_updater_contract():
     assert config.update_check_delay == 1.25
     assert config.start_line == 4
     assert config.report is True
+
+
+def test_gui_config_defaults_to_verifying_ssl_certificates():
+    config = build_updater_config(_values())
+
+    assert config.ssl_verify is True
+    assert config.ssl_ca_file is None
 
 
 @pytest.mark.parametrize(

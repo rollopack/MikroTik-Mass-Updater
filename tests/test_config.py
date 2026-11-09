@@ -71,6 +71,37 @@ class TestConfigFile:
         finally:
             os.unlink(config_path)
 
+    def test_config_loads_ssl_verification_and_ca_bundle(self, monkeypatch):
+        config_path = _write_yaml(
+            "ssl_verify: false\nssl_ca_file: routers-ca.pem\n"
+            "ssl_legacy_ciphers: true\n"
+        )
+        try:
+            monkeypatch.setattr(
+                sys, 'argv',
+                ['prog', '-u', 'admin', '-p', 'pass', '--config', config_path],
+            )
+            args = _parse_args()
+            assert args.ssl_verify is False
+            assert args.ssl_ca_file == 'routers-ca.pem'
+            assert args.ssl_legacy_ciphers is True
+        finally:
+            os.unlink(config_path)
+
+    def test_cli_ssl_option_overrides_config_verification(self, monkeypatch):
+        config_path = _write_yaml("ssl_verify: false\n")
+        try:
+            monkeypatch.setattr(
+                sys, 'argv',
+                [
+                    'prog', '-u', 'admin', '-p', 'pass', '--config', config_path,
+                    '--ssl-verify',
+                ],
+            )
+            assert _parse_args().ssl_verify is True
+        finally:
+            os.unlink(config_path)
+
     def test_config_types_preserved(self, monkeypatch):
         config_path = _write_yaml("port: 8729\nssl_port: 8730\ntimeout: 30\nupdate_check_attempts: 20\nupdate_check_delay: 1.5\n")
         try:

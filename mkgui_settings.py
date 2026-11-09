@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-STRING_KEYS = {"username", "ip_list", "custom_commands", "only"}
+STRING_KEYS = {"username", "ip_list", "custom_commands", "only", "ssl_ca_file"}
 INTEGER_KEYS = {
     "threads",
     "timeout",
@@ -20,7 +20,10 @@ INTEGER_KEYS = {
     "start_line",
 }
 FLOAT_KEYS = {"update_check_delay"}
-BOOLEAN_KEYS = {"dry_run", "inventory", "ssl", "report", "debug"}
+BOOLEAN_KEYS = {
+    "dry_run", "inventory", "ssl", "ssl_verify", "ssl_legacy_ciphers",
+    "report", "debug"
+}
 SETTINGS_KEYS = STRING_KEYS | INTEGER_KEYS | FLOAT_KEYS | BOOLEAN_KEYS
 
 

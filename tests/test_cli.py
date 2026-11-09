@@ -92,6 +92,41 @@ class TestSslPort:
             _parse_args()
 
 
+class TestSslVerificationOptions:
+    def test_certificate_verification_is_enabled_by_default(self):
+        args = _parse_args(['-u', 'admin', '-p', 'pass'])
+
+        assert args.ssl_verify is True
+        assert args.ssl_ca_file is None
+
+    def test_cli_can_disable_and_reenable_certificate_verification(self):
+        disabled = _parse_args(
+            ['-u', 'admin', '-p', 'pass', '--ssl-no-verify']
+        )
+        enabled = _parse_args(
+            ['-u', 'admin', '-p', 'pass', '--ssl-verify']
+        )
+
+        assert disabled.ssl_verify is False
+        assert enabled.ssl_verify is True
+
+    def test_cli_accepts_ca_bundle_path(self):
+        args = _parse_args(
+            ['-u', 'admin', '-p', 'pass', '--ssl-ca-file', 'routers-ca.pem']
+        )
+
+        assert args.ssl_ca_file == 'routers-ca.pem'
+
+    def test_legacy_cipher_compatibility_is_disabled_by_default(self):
+        default_args = _parse_args(['-u', 'admin', '-p', 'pass'])
+        legacy_args = _parse_args(
+            ['-u', 'admin', '-p', 'pass', '--ssl-legacy-ciphers']
+        )
+
+        assert default_args.ssl_legacy_ciphers is False
+        assert legacy_args.ssl_legacy_ciphers is True
+
+
 class TestGuiArgumentParsing:
     def test_gui_can_parse_cli_options_without_credentials(self, tmp_path):
         retry_state = tmp_path / 'state.json'

@@ -44,7 +44,8 @@ Use the CLI for scripted or unattended jobs, or the desktop UI for interactive r
 - Concurrent API operations with configurable worker count and connection timeout.
 - CLI progress bar, structured log files, and a per-run success/failure summary.
 - RouterOS updates, optional firmware upgrades, dry-run, and read-only inventory modes.
-- API-SSL globally or per host; certificate verification is disabled to support self-signed MikroTik certificates.
+- API-SSL globally or per host, with certificate-chain and hostname verification enabled by default.
+- An explicit legacy-cipher compatibility option for older API-SSL services.
 - Cloud Backup upload and verification before old backups are cleaned up.
 - Custom RouterOS commands from YAML.
 - Host selection with `--only` and selective retry with `--retry-failed`.
@@ -159,6 +160,10 @@ Precedence is **command-line options → YAML configuration → saved preference
 | `--cloud-password PASSWORD` | Password used for Cloud Backup. |
 | `--upgrade-firmware` | Attempt a RouterBOARD firmware upgrade. |
 | `--ssl` | Use API-SSL for all hosts; switches the default API port to `8729`. Per-host `|SSL` is also supported. |
+| `--ssl-verify` | Verify API-SSL certificate chains and hostnames (default). |
+| `--ssl-no-verify` | Disable API-SSL certificate and hostname verification. This is insecure and should only be used when necessary. |
+| `--ssl-ca-file PATH` | CA bundle for API-SSL verification. When supplied, this bundle replaces the system CA roots. |
+| `--ssl-legacy-ciphers` | Enable weak legacy API-SSL ciphers for older routers. Insecure; use only when required. |
 | `--custom-commands PATH` | YAML file of custom RouterOS commands. |
 | `--inventory` | Read-only collection of identity, model, serial, RouterOS, and firmware information. Skips updates, backups, custom commands, and reboots. |
 | `--only HOST[,HOST...]` | Process only matching host addresses from the IP list. |
@@ -181,6 +186,11 @@ timeout: 30
 port: 8728
 ssl_port: 8729
 ssl: false
+ssl_verify: true
+# Optional private CA bundle for API-SSL; replaces system CA roots:
+# ssl_ca_file: routers-ca.pem
+# Enable only if an older router cannot negotiate the default cipher set:
+# ssl_legacy_ciphers: false
 ip_list: list.txt
 start_line: 1
 update_check_attempts: 15
@@ -206,7 +216,7 @@ The UI saves non-secret preferences atomically when a run starts and when the wi
 - Linux: `~/.config/mikrotik-mass-updater/settings.json`, or `$XDG_CONFIG_HOME/mikrotik-mass-updater/settings.json` when configured.
 - Windows: `%APPDATA%/MikroTik Mass Updater/settings.json`.
 
-On POSIX, the settings file is created with mode `600`. The API username and ordinary preferences are remembered. API and Cloud Backup passwords are never saved. One-shot actions such as firmware upgrade, Cloud Backup, and retry-failed are not restored automatically.
+On POSIX, the settings file is created with mode `600`. The API username and ordinary preferences, including SSL verification and the CA bundle path, are remembered. API and Cloud Backup passwords are never saved. One-shot actions such as firmware upgrade, Cloud Backup, and retry-failed are not restored automatically.
 
 ## Reports
 
@@ -259,10 +269,16 @@ Passwords containing `|` are not supported. IPv6 addresses are not supported by 
 ## Operational Notes
 
 - API access must be enabled on each router. API-SSL uses port `8729` by default; use `--ssl` or the per-host `|SSL` marker.
+- API-SSL certificate and hostname verification is enabled by default. The certificate must be trusted by the system CA store or by the bundle supplied with `--ssl-ca-file`; when connecting by IP, the certificate must contain a matching IP subject alternative name. Use `--ssl-no-verify` only as an explicit compatibility exception: it accepts untrusted certificates and does not authenticate the router.
+- `--ssl-no-verify` only skips certificate verification; it does not enable older ciphers or protocols. If an old API-SSL service rejects the handshake, first confirm that API-SSL has a certificate assigned. Only if cipher negotiation is the issue, try `--ssl-legacy-ciphers`; this weakens TLS and produces a warning in the run log.
 - Each run writes to `log/<timestamp>/`. If two runs start in the same second, a numeric suffix is added. `--no-report` leaves only the log.
 - MikroTik Cloud provides one free backup slot. Replacing it requires the existing backup name returned by `/system/backup/cloud/print`.
 - Firmware-triggered reboots use the persistent RouterOS script `mkmassupdate_reboot`. It is intentionally left on the device because the router reboots while the script runs.
 - Connection and API errors are logged with the target host; malformed host-list lines are skipped with a warning.
+
+### API-SSL certificate verification in 6.1.0
+
+Starting with version `6.1.0`, API-SSL requires a certificate whose chain is trusted and whose identity matches the address used to connect. A self-signed or private-CA certificate can be trusted with `--ssl-ca-file`; when connecting by IP, the certificate needs a matching IP subject alternative name. Routers with missing, expired, untrusted, or mismatched certificates will fail verification. Use `--ssl-no-verify` only as a temporary compatibility measure on a trusted management network. It disables server identity checks and leaves the connection vulnerable to an active man-in-the-middle attack. Older routers may separately need `--ssl-legacy-ciphers`, which weakens cipher security and is disabled by default.
 
 ## Contributing
 

@@ -39,6 +39,9 @@ def test_save_load_filters_credentials_and_one_shot_actions(tmp_path):
         "timeout": "15",
         "update_check_delay": "1.5",
         "ssl": True,
+        "ssl_verify": False,
+        "ssl_legacy_ciphers": True,
+        "ssl_ca_file": "/etc/mikrotik/routers-ca.pem",
         "report": False,
     }
 
@@ -52,6 +55,9 @@ def test_save_load_filters_credentials_and_one_shot_actions(tmp_path):
         "timeout": 15,
         "update_check_delay": 1.5,
         "ssl": True,
+        "ssl_verify": False,
+        "ssl_legacy_ciphers": True,
+        "ssl_ca_file": "/etc/mikrotik/routers-ca.pem",
         "report": False,
     }
     assert loaded == stored
