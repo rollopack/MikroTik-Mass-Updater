@@ -16,6 +16,7 @@ from typing import Any
 import mkmassupdate
 from mkmassupdate import MassUpdater, UpdaterConfig
 from mkgui_settings import SettingsError, load_settings, save_settings
+from mkgui_theme import apply_theme
 
 
 def build_updater_config(values: dict[str, Any]) -> UpdaterConfig:
@@ -113,8 +114,9 @@ class MikroTikUpdaterApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(f"MikroTik Mass Updater {mkmassupdate.VERSION}")
-        self.root.geometry("1180x850")
-        self.root.minsize(960, 700)
+        initial_height = max(600, min(850, self.root.winfo_screenheight() - 80))
+        self.root.geometry(f"1180x{initial_height}")
+        self.root.minsize(960, 600)
         self.events: queue.Queue[dict[str, Any]] = queue.Queue()
         self.updater: MassUpdater | None = None
         self.run_thread: threading.Thread | None = None
@@ -131,7 +133,10 @@ class MikroTikUpdaterApp:
 
         self._make_variables()
         self._build_widgets()
+        self._apply_theme()
+        self.root.bind("<Configure>", self._resize_content)
         self.root.protocol("WM_DELETE_WINDOW", self._close)
+        self.root.after_idle(self._initialize_responsive_layout)
         self.root.after(100, self._poll_events)
 
     def _make_variables(self) -> None:
@@ -159,6 +164,7 @@ class MikroTikUpdaterApp:
         self.cloud_backup = tk.BooleanVar(value=False)
         self.report = tk.BooleanVar(value=True)
         self.host_filter = tk.StringVar(value="All")
+        self.theme = tk.StringVar(value="Light")
 
     def _build_widgets(self) -> None:
         outer = ttk.Frame(self.root, padding=12)
@@ -169,6 +175,16 @@ class MikroTikUpdaterApp:
             heading, text="MikroTik Mass Updater", font=("TkDefaultFont", 16, "bold")
         ).pack(side="left")
         ttk.Label(heading, text=f"Version {mkmassupdate.VERSION}").pack(side="right")
+        self.theme_selector = ttk.Combobox(
+            heading,
+            textvariable=self.theme,
+            values=("Light", "Dark"),
+            state="readonly",
+            width=9,
+        )
+        self.theme_selector.pack(side="right", padx=(0, 6))
+        ttk.Label(heading, text="Theme:").pack(side="right", padx=(12, 4))
+        self.theme_selector.bind("<<ComboboxSelected>>", self._on_theme_selected)
 
         options = ttk.LabelFrame(outer, text="Connection and run options", padding=10)
         options.pack(fill="x", pady=(0, 10))
@@ -177,11 +193,15 @@ class MikroTikUpdaterApp:
         self._form_entry(options, 0, 0, "API username", self.username)
         self._form_entry(options, 0, 3, "API password", self.password, show="•")
         self._form_entry(options, 1, 0, "Host list", self.ip_list)
-        ttk.Button(options, text="Browse…", command=self._choose_ip_list).grid(
+        ttk.Button(
+            options, text="Browse…", command=self._choose_ip_list, style="Secondary.TButton"
+        ).grid(
             row=1, column=2, padx=(6, 12), sticky="w"
         )
         self._form_entry(options, 1, 3, "Custom commands YAML", self.custom_commands)
-        ttk.Button(options, text="Browse…", command=self._choose_commands).grid(
+        ttk.Button(
+            options, text="Browse…", command=self._choose_commands, style="Secondary.TButton"
+        ).grid(
             row=1, column=5, padx=(6, 0), sticky="w"
         )
 
@@ -195,13 +215,17 @@ class MikroTikUpdaterApp:
         self._form_entry(options, 5, 3, "Only these hosts", self.only)
         self._form_entry(options, 6, 0, "Cloud Backup password", self.cloud_password, show="•")
         self._form_entry(options, 6, 3, "Retry failed (latest or state path)", self.retry_failed)
-        ttk.Button(options, text="Browse…", command=self._choose_retry_state).grid(
+        ttk.Button(
+            options, text="Browse…", command=self._choose_retry_state, style="Secondary.TButton"
+        ).grid(
             row=6, column=5, padx=(6, 0), sticky="w"
         )
 
         flags = ttk.Frame(options)
         self._form_entry(options, 7, 0, "SSL CA bundle", self.ssl_ca_file)
-        ttk.Button(options, text="Browse…", command=self._choose_ssl_ca_file).grid(
+        ttk.Button(
+            options, text="Browse…", command=self._choose_ssl_ca_file, style="Secondary.TButton"
+        ).grid(
             row=7, column=2, padx=(6, 12), sticky="w"
         )
         ttk.Checkbutton(
@@ -272,19 +296,112 @@ class MikroTikUpdaterApp:
         log_scroll.pack(side="right", fill="y")
 
         footer = ttk.Frame(outer)
-        footer.pack(fill="x", pady=(10, 0))
-        self.progress = ttk.Progressbar(footer, mode="determinate", length=220)
+        # Reserve this command strip before the expandable panes can consume its space.
+        footer.pack(side="bottom", fill="x", pady=(10, 0), before=table_frame)
+        self.progress = ttk.Progressbar(
+            footer, mode="determinate", length=220, style="Primary.Horizontal.TProgressbar"
+        )
         self.progress.pack(side="left", padx=(0, 10))
         self.summary = ttk.Label(footer, text="Ready")
         self.summary.pack(side="left", fill="x", expand=True)
         self.open_button = ttk.Button(
-            footer, text="Open output folder", command=self._open_output, state="disabled"
+            footer,
+            text="Open output folder",
+            command=self._open_output,
+            state="disabled",
+            style="Secondary.TButton",
         )
         self.open_button.pack(side="right", padx=(6, 0))
-        self.stop_button = ttk.Button(footer, text="Stop", command=self._stop_run, state="disabled")
+        self.stop_button = ttk.Button(
+            footer, text="Stop", command=self._stop_run, state="disabled", style="Danger.TButton"
+        )
         self.stop_button.pack(side="right", padx=(6, 0))
-        self.start_button = ttk.Button(footer, text="Start run", command=self._start_run)
+        self.start_button = ttk.Button(
+            footer, text="Start run", command=self._start_run, style="Primary.TButton"
+        )
         self.start_button.pack(side="right")
+
+        self._responsive_frames = (heading, options, toolbar, log_frame, footer)
+        self._table_frame = table_frame
+        self._log_frame = log_frame
+        self._fixed_layout_height: int | None = None
+        self._row_height = 20
+        self._line_height = 16
+
+    def _apply_theme(self) -> None:
+        theme_name = apply_theme(
+            self.root,
+            self.theme.get(),
+            log_view=self.log_view,
+            host_table=self.host_table,
+        )
+        self.theme.set(theme_name.title())
+
+    def _on_theme_selected(self, _event: tk.Event[Any] | None = None) -> None:
+        self._apply_theme()
+        self._save_settings()
+
+    @staticmethod
+    def _content_widget_heights(
+        available_height: int, row_height: int, line_height: int
+    ) -> tuple[int, int]:
+        """Choose host rows and log lines that fit the space above the footer."""
+        available_height = max(0, available_height)
+        row_height = max(1, row_height)
+        line_height = max(1, line_height)
+        host_rows = max(1, min(10, int(available_height * 0.68 / row_height)))
+        log_space = max(0, available_height - host_rows * row_height)
+        log_lines = max(1, min(7, int(log_space / line_height)))
+        return host_rows, log_lines
+
+    def _initialize_responsive_layout(self) -> None:
+        """Measure fixed controls once before shrinking the host and log panes."""
+        self.root.update_idletasks()
+        heading, options, toolbar, log_frame, footer = self._responsive_frames
+        footer.configure(height=footer.winfo_reqheight())
+        footer.pack_propagate(False)
+        self.root.update_idletasks()
+        log_chrome = max(
+            0, log_frame.winfo_reqheight() - self.log_view.winfo_reqheight()
+        )
+        try:
+            row_height = int(ttk.Style(self.root).lookup("Treeview", "rowheight"))
+        except (TypeError, ValueError):
+            row_height = 0
+        if row_height <= 0:
+            row_count = max(1, int(self.host_table.cget("height")))
+            row_height = max(1, self.host_table.winfo_reqheight() // row_count)
+        self._row_height = row_height
+        self._line_height = max(
+            1, math.ceil(self.log_view.winfo_reqheight() / max(1, int(self.log_view.cget("height"))))
+        )
+        table_rows = max(1, int(self.host_table.cget("height")))
+        table_chrome = max(
+            0, self._table_frame.winfo_reqheight() - table_rows * self._row_height
+        )
+        # Outer padding, pack spacing, and fixed headers/scrollbars.
+        self._fixed_layout_height = (
+            sum(frame.winfo_reqheight() for frame in (heading, options, toolbar, footer))
+            + log_chrome
+            + table_chrome
+            + 68
+        )
+        self._resize_content()
+
+    def _resize_content(self, event: tk.Event[Any] | None = None) -> None:
+        if event is not None and event.widget is not self.root:
+            return
+        if self._fixed_layout_height is None:
+            return
+        height = event.height if event is not None else self.root.winfo_height()
+        available = height - self._fixed_layout_height
+        host_rows, log_lines = self._content_widget_heights(
+            available, self._row_height, self._line_height
+        )
+        if int(self.host_table.cget("height")) != host_rows:
+            self.host_table.configure(height=host_rows)
+        if int(self.log_view.cget("height")) != log_lines:
+            self.log_view.configure(height=log_lines)
 
     @staticmethod
     def _form_entry(
@@ -354,6 +471,8 @@ class MikroTikUpdaterApp:
         self.retry_failed.set(args.retry_failed or "")
         self.report.set(args.report)
         self.debug.set(args.debug)
+        self.theme.set("Dark" if str(getattr(args, "theme", "light")).lower() == "dark" else "Light")
+        self._apply_theme()
 
     def _form_values(self) -> dict[str, Any]:
         return {
@@ -381,6 +500,7 @@ class MikroTikUpdaterApp:
             "retry_failed": self.retry_failed.get(),
             "report": self.report.get(),
             "debug": self.debug.get(),
+            "theme": self.theme.get().lower(),
         }
 
     def _settings_values(self) -> dict[str, Any]:
@@ -392,7 +512,7 @@ class MikroTikUpdaterApp:
                 "update_check_attempts", "update_check_delay", "start_line", "dry_run",
                 "inventory", "ssl", "ssl_verify", "ssl_ca_file",
                 "ssl_legacy_ciphers",
-                "custom_commands", "only", "report", "debug",
+                "custom_commands", "only", "report", "debug", "theme",
             )
         }
 
@@ -635,11 +755,12 @@ class MikroTikUpdaterApp:
     def _update_host_row(self, row: str) -> None:
         record = self.hosts[row]
         values = tuple(record[key] for key, _title, _width in self.COLUMNS)
+        tags = (f"status-{record['status']}",)
         if self._matches_filter(record):
             if self.host_table.exists(row):
-                self.host_table.item(row, values=values)
+                self.host_table.item(row, values=values, tags=tags)
             else:
-                self.host_table.insert("", "end", iid=row, values=values)
+                self.host_table.insert("", "end", iid=row, values=values, tags=tags)
         elif self.host_table.exists(row):
             self.host_table.delete(row)
 
@@ -651,7 +772,9 @@ class MikroTikUpdaterApp:
         for row, record in self.hosts.items():
             if self._matches_filter(record):
                 values = tuple(record[key] for key, _title, _width in self.COLUMNS)
-                self.host_table.insert("", "end", iid=row, values=values)
+                self.host_table.insert(
+                    "", "end", iid=row, values=values, tags=(f"status-{record['status']}",)
+                )
         if selected and self.host_table.exists(selected):
             self.host_table.selection_set(selected)
 

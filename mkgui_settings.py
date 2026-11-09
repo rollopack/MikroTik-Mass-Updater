@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 
-STRING_KEYS = {"username", "ip_list", "custom_commands", "only", "ssl_ca_file"}
+STRING_KEYS = {"username", "ip_list", "custom_commands", "only", "ssl_ca_file", "theme"}
 INTEGER_KEYS = {
     "threads",
     "timeout",
@@ -54,6 +54,8 @@ def _normalise_value(key: str, value: Any) -> Any:
     if key in STRING_KEYS:
         if not isinstance(value, str):
             raise SettingsError(f"Saved setting '{key}' must be text")
+        if key == "theme" and value not in {"light", "dark"}:
+            raise SettingsError("Saved setting 'theme' must be 'light' or 'dark'")
         return value
 
     if key in INTEGER_KEYS:

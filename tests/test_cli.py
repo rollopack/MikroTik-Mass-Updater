@@ -4,8 +4,10 @@ import logging
 logging.disable(logging.CRITICAL)
 
 import argparse
+import subprocess
 import sys
-from mkmassupdate import _positive_int, _port_type, _positive_float, _parse_args
+from pathlib import Path
+from mkmassupdate import VERSION, _positive_int, _port_type, _positive_float, _parse_args
 
 
 class TestPositiveInt:
@@ -26,6 +28,23 @@ class TestPositiveInt:
     def test_rejects_non_numeric(self):
         with pytest.raises(ValueError):
             _positive_int('abc')
+
+
+def test_cli_version_does_not_require_tkinter():
+    script = Path(__file__).resolve().parents[1] / "mkmassupdate.py"
+    code = (
+        "import runpy, sys; "
+        "sys.modules['tkinter'] = None; "
+        f"sys.argv = [{str(script)!r}, '--version']; "
+        f"runpy.run_path({str(script)!r}, run_name='__main__')"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert VERSION in result.stdout
 
 
 class TestPortType:

@@ -7,7 +7,7 @@ Concurrent MikroTik RouterOS updates, firmware upgrades, Cloud Backup, inventory
 This project builds on work by Phillip Hutchison and Kevin Byrd, ported to Python and the MikroTik API by Gabriel Rolland.
 
 <p align="center">
-  <img src="./screenshots/screenshot-v6-UI_2.png" alt="MikroTik Mass Updater v6 desktop interface" width="960">
+  <img src="./screenshots/screenshot-v6.1-ui-light.png" alt="MikroTik Mass Updater 6.1.1 desktop interface in light theme" width="960">
 </p>
 
 ## Table of Contents
@@ -55,7 +55,7 @@ Use the CLI for scripted or unattended jobs, or the desktop UI for interactive r
 
 ### Built With
 
-- Python and the standard library (`threading`, `argparse`, `tkinter`)
+- Python and the standard library (`threading`, `argparse`, `tkinter`, `ttk`)
 - [`librouteros`](https://pypi.org/project/librouteros/)
 - [`tqdm`](https://pypi.org/project/tqdm/)
 - [`PyYAML`](https://pypi.org/project/PyYAML/)
@@ -64,7 +64,7 @@ Use the CLI for scripted or unattended jobs, or the desktop UI for interactive r
 
 ### Prerequisites
 
-- Python **3.7 or later**
+- Python **3.10 or later**
 - MikroTik API access enabled on the target routers (port `8728` by default; API-SSL usually uses `8729`)
 - Tkinter for the desktop UI. It is included with most Windows Python installations; Debian/Ubuntu may require `python3-tk`.
 
@@ -129,6 +129,15 @@ Launch the UI with saved preferences:
 ```bash
 python3 mkgui.py
 ```
+
+The interface uses only Tkinter and the standard `ttk` widgets. Choose **Light**
+or **Dark** from the theme selector; the preference is saved with the other
+non-secret desktop settings. No additional Python package is required for the
+theme.
+
+<p align="center">
+  <img src="./screenshots/screenshot-v6.1-ui-dark.png" alt="MikroTik Mass Updater 6.1.1 desktop interface in dark theme" width="960">
+</p>
 
 CLI arguments, configuration files, and the version/help actions are also available when launching the UI:
 

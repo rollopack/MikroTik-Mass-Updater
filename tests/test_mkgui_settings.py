@@ -43,6 +43,7 @@ def test_save_load_filters_credentials_and_one_shot_actions(tmp_path):
         "ssl_legacy_ciphers": True,
         "ssl_ca_file": "/etc/mikrotik/routers-ca.pem",
         "report": False,
+        "theme": "dark",
     }
 
     save_settings(values, path)
@@ -59,6 +60,7 @@ def test_save_load_filters_credentials_and_one_shot_actions(tmp_path):
         "ssl_legacy_ciphers": True,
         "ssl_ca_file": "/etc/mikrotik/routers-ca.pem",
         "report": False,
+        "theme": "dark",
     }
     assert loaded == stored
     assert "password" not in stored
@@ -118,3 +120,9 @@ def test_load_ignores_auth_secrets_and_rejects_non_integer_numeric_fields(tmp_pa
     path.write_text('{"threads": 4.5}', encoding="utf-8")
     with pytest.raises(SettingsError, match="threads"):
         load_settings(path)
+
+
+@pytest.mark.parametrize("theme", ["blue", "Dark", "", None])
+def test_theme_preference_only_accepts_light_or_dark(theme, tmp_path):
+    with pytest.raises(SettingsError, match="theme"):
+        save_settings({"theme": theme}, tmp_path / "settings.json")
