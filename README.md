@@ -10,6 +10,12 @@ This project builds on work by Phillip Hutchison and Kevin Byrd, ported to Pytho
   <img src="./screenshots/screenshot-v6.1-ui-light.png" alt="MikroTik Mass Updater 6.1.1 desktop interface in light theme" width="960">
 </p>
 
+## Project Status
+
+This project is no longer actively maintained. I have migrated to [TikPilot](https://github.com/maximdr86/tikpilot), which also includes features for updating MikroTik routers in bulk.
+
+I currently contribute to TikPilot through pull requests, though I may create a dedicated fork in the future.
+
 ## Table of Contents
 
 - [About the Project](#about-the-project)
